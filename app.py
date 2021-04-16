@@ -3,15 +3,20 @@ import threading
 from flask import jsonify
 from preprocessors.initial_preprocess import init_preprocessing
 from models.XGBoost import XGBoostModel
+from models.Kmeans import KmeansModel
+from datetime import datetime
+import numpy as np
 
 app = flask.Flask(__name__)
 xg_model = XGBoostModel()
+k_means_model = KmeansModel()
 
 
 def activate_job():
     def run_job():
-        print("Job started")
-        init_preprocessing(xg_model)
+        print("Preprocessing thread started at ", datetime.now())
+        init_preprocessing(xg_model, k_means_model)
+        print("Preprocessing thread finished at ", datetime.now())
 
     thread = threading.Thread(target=run_job)
     thread.start()
@@ -22,43 +27,26 @@ def predict_xgb():
     req = flask.request
     ltd = req.args.get('driver_lat')
     lng = req.args.get('driver_lng')
-    timestamp = req.args.get('timestamp')
-    print("Requested prediction for driver at lat: " + ltd + ", lng: " + lng + ", timestamp: " + timestamp)
-    return jsonify(points)
+    f = np.array([ltd, lng]).reshape((1, -1))
+    prediction = xg_model.predict(f)
+    return jsonify(prediction.tolist())
 
 
-@app.route('/api/v2/predict', methods=['GET'])
-def test():
+@app.route('/api/v1/retrain', methods=['GET'])
+def retrain():
     print("Request accepted")
     xg_model.train()
 
 
-points = [
-    {'lat': 73.123451234,
-     'lng': 45.001420412,
-     },
-    {'lat': 73.2221234512,
-     'lng': 45.0101420412,
-     },
-    {'lat': 73.12423451234,
-     'lng': 45.12401420412,
-     },
-    {'lat': 73.123424412,
-     'lng': 45.001412356,
-     },
-    {'lat': 73.124152341,
-     'lng': 45.214523412,
-     },
-    {'lat': 73.125589023,
-     'lng': 45.522551463,
-     },
-    {'lat': 73.155235613,
-     'lng': 46.612356125,
-     },
-    {'lat': 74.001234512,
-     'lng': 44.123312223,
-     }
-]
+@app.route('/api/v1/cluster', methods=['POST'])
+def predict_cluster():
+    req = flask.request
+    ltd = req.args.get('driver_lat')
+    lng = req.args.get('driver_lng')
+    f = np.array([ltd, lng]).reshape((1, -1))
+    prediction = k_means_model.predict(f)
+    return jsonify(prediction.tolist())
+
 
 if __name__ == '__main__':
     activate_job()

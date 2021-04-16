@@ -101,12 +101,163 @@ def changingLabels(num):
 
 
 def pickup_10min_bins(dataframe, month, year):
+    print("pickup_10min_bins() - Picking time bins")
     pickupTime = dataframe["pickup_time"].values
     unixTime = [1420070400, 1451606400]
     unix_year = unixTime[year - 2015]
     time_10min_bin = [int((i - unix_year) / 600) for i in pickupTime]
     dataframe["time_bin"] = np.array(time_10min_bin)
+    print("pickup_10min_bins() - Picking time bins finished")
     return dataframe
+
+
+def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, predicted_pickup_values_list,
+                             TruePickups, feat):
+    import pandas as pd
+    print("train_test_split_compute() - started computing")
+
+    amplitude_lists = []
+    frequency_lists = []
+    for i in range(30):
+        ampli = np.abs(np.fft.fft(regionWisePickup_Jan_2016[i][0:4096]))
+        freq = np.abs(np.fft.fftfreq(4096, 1))
+        ampli_indices = np.argsort(-ampli)[1:]
+        amplitude_values = []
+        frequency_values = []
+        for j in range(0, 9, 2):
+            amplitude_values.append(ampli[ampli_indices[j]])
+            frequency_values.append(freq[ampli_indices[j]])
+        for k in range(4459):
+            amplitude_lists.append(amplitude_values)
+            frequency_lists.append(frequency_values)
+
+    train_previousFive_pickups = [feat[i * 4459:(4459 * i + 3567)] for i in range(30)]
+    test_previousFive_pickups = [feat[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(30)]
+    train_fourier_frequencies = [frequency_lists[i * 4459:(4459 * i + 3567)] for i in range(30)]
+    test_fourier_frequencies = [frequency_lists[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(30)]
+    train_fourier_amplitudes = [amplitude_lists[i * 4459:(4459 * i + 3567)] for i in range(30)]
+    test_fourier_amplitudes = [amplitude_lists[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(30)]
+
+    print(
+        "Train Data: Total number of clusters = {}. Number of points in each cluster = {}. Total number of training points = {}".format(
+            len(train_previousFive_pickups), len(train_previousFive_pickups[0]),
+            len(train_previousFive_pickups) * len(train_previousFive_pickups[0])))
+    print(
+        "Test Data: Total number of clusters = {}. Number of points in each cluster = {}. Total number of test points = {}".format(
+            len(test_previousFive_pickups), len(test_previousFive_pickups[0]),
+            len(test_previousFive_pickups) * len(test_previousFive_pickups[0])))
+
+    train_lat = [i[:3567] for i in lat]
+    train_lon = [i[:3567] for i in lon]
+    train_weekDay = [i[:3567] for i in day_of_week]
+    train_weighted_avg = [i[:3567] for i in predicted_pickup_values_list]
+    train_TruePickups = [i[:3567] for i in TruePickups]
+
+    test_lat = [i[3567:] for i in lat]
+    test_lon = [i[3567:] for i in lon]
+    test_weekDay = [i[3567:] for i in day_of_week]
+    test_weighted_avg = [i[3567:] for i in predicted_pickup_values_list]
+    test_TruePickups = [i[3567:] for i in TruePickups]
+
+    train_pickups = []
+    test_pickups = []
+    train_freq = []
+    test_freq = []
+    train_amp = []
+    test_amp = []
+    for i in range(30):
+        train_pickups.extend(train_previousFive_pickups[i])
+        test_pickups.extend(test_previousFive_pickups[i])
+        train_freq.extend(train_fourier_frequencies[i])
+        test_freq.extend(test_fourier_frequencies[i])
+        train_amp.extend(train_fourier_amplitudes[i])
+        test_amp.extend(test_fourier_amplitudes[i])
+
+    train_prevPickups_freq_amp = np.hstack((train_pickups, train_freq, train_amp))
+    test_prevPickups_freq_amp = np.hstack((test_pickups, test_freq, test_amp))
+
+    train_flat_lat = sum(train_lat, [])
+    train_flat_lon = sum(train_lon, [])
+    train_flat_weekDay = sum(train_weekDay, [])
+    train_weighted_avg_flat = sum(train_weighted_avg, [])
+    train_TruePickups_flat = sum(train_TruePickups, [])
+
+    test_flat_lat = sum(test_lat, [])
+    test_flat_lon = sum(test_lon, [])
+    test_flat_weekDay = sum(test_weekDay, [])
+    test_weighted_avg_flat = sum(test_weighted_avg, [])
+    test_TruePickups_flat = sum(test_TruePickups, [])
+
+    columns = ['ft_5', 'ft_4', 'ft_3', 'ft_2', 'ft_1', 'freq1', 'freq2', 'freq3', 'freq4', 'freq5', 'Amp1', 'Amp2',
+               'Amp3',
+               'Amp4', 'Amp5']
+    train_df = pd.DataFrame(data=train_prevPickups_freq_amp, columns=columns)
+    train_df["Latitude"] = train_flat_lat
+    train_df["Longitude"] = train_flat_lon
+    train_df["WeekDay"] = train_flat_weekDay
+    train_df["WeightedAvg"] = train_weighted_avg_flat
+
+    test_df = pd.DataFrame(data=test_prevPickups_freq_amp, columns=columns)
+    test_df["Latitude"] = test_flat_lat
+    test_df["Longitude"] = test_flat_lon
+    test_df["WeekDay"] = test_flat_weekDay
+    test_df["WeightedAvg"] = test_weighted_avg_flat
+    print("train_test_split_compute() - computing finished")
+    return train_df, train_TruePickups_flat, test_df, test_TruePickups_flat
+
+
+def compute_predicted_pickup_values(regionWisePickup_Jan_2016):
+    print("compute_predicted_pickup_values() - started computing...")
+    predicted_pickup_values = []
+    predicted_pickup_values_list = []
+
+    window_size = 2
+    for i in range(30):
+        for j in range(4464):
+            if j == 0:
+                predicted_pickup_values.append(0)
+            else:
+                if j >= window_size:
+                    sumPickups = 0
+                    sumOfWeights = 0
+                    for k in range(window_size, 0, -1):
+                        sumPickups += k * (regionWisePickup_Jan_2016[i][j - window_size + (k - 1)])
+                        sumOfWeights += k
+                    predicted_value = int(sumPickups / sumOfWeights)
+                    predicted_pickup_values.append(predicted_value)
+                else:
+                    sumPickups = 0
+                    sumOfWeights = 0
+                    for k in range(j, 0, -1):
+                        sumPickups += k * regionWisePickup_Jan_2016[i][k - 1]
+                        sumOfWeights += k
+                    predicted_value = int(sumPickups / sumOfWeights)
+                    predicted_pickup_values.append(predicted_value)
+
+        predicted_pickup_values_list.append(predicted_pickup_values[5:])
+        predicted_pickup_values = []
+    print("compute_predicted_pickup_values() - computing finished")
+    return predicted_pickup_values_list
+
+
+def compute_pickups(k_means_model, regionWisePickup_Jan_2016):
+    TruePickups = []
+    lat = []
+    lon = []
+    day_of_week = []
+    number_of_time_stamps = 5
+
+    centerOfRegions = k_means_model.get_centers()
+    feat = [0] * number_of_time_stamps
+    for i in range(30):
+        lat.append([centerOfRegions[i][0]] * 4459)
+        lon.append([centerOfRegions[i][1]] * 4459)
+        day_of_week.append([int(((int(j / 144) % 7) + 5) % 7) for j in range(5, 4464)])
+        feat = np.vstack((feat, [regionWisePickup_Jan_2016[i][k:k + number_of_time_stamps] for k in
+                                 range(0, len(regionWisePickup_Jan_2016[i]) - (number_of_time_stamps))]))
+        TruePickups.append(regionWisePickup_Jan_2016[i][5:])
+    feat = feat[1:]
+    return TruePickups, lat, lon, day_of_week, feat
 
 
 def getUniqueBinsWithPickups(dataframe):
@@ -412,6 +563,7 @@ def exponential_weighted_moving_average_predictions(ratios):
     mean_sq_error = sum(squared_error) / len(squared_error)
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
+
 def preprocess(data):
     print("preprocess() - Starting baseline preprocessing")
     print("preprocess() - Calculating trip times")
@@ -428,7 +580,7 @@ def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE):
     print("Beginning procedure of choosing clusters count..")
     startTime = datetime.now()
     clusters_min_dist = {}
-    for i in range(10, 150, 5):
+    for i in range(10, 100, 10):
         regionCenters, totalClusters = makingRegions(i, coord)
         clusters_min_dist.update(min_distance(regionCenters, totalClusters))
     print("Finished procedure of choosing clusters count. Time taken = " + str(datetime.now() - startTime))

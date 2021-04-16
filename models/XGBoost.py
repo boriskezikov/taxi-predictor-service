@@ -37,6 +37,7 @@ class XGBoostModel:
         print("xgboost() - training finished")
         print("Train MAPE: ", train_MAPE)
         print("Train MSE: ", train_MSE)
+        self.dump_model()
         return self
 
     def predict(self, to_predict):
@@ -45,7 +46,7 @@ class XGBoostModel:
 
     def dump_model(self):
         print("xgboost() - dumping model.. ")
-        joblib.dump(self.model, "../static/xgb-trained")
+        joblib.dump(self.model, "dumped_models/xgb-trained")
         print("xgboost() - dumping finished. ")
 
     def __is_initialized__(self):
