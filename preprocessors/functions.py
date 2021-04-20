@@ -112,13 +112,13 @@ def pickup_10min_bins(dataframe, month, year):
 
 
 def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, predicted_pickup_values_list,
-                             TruePickups, feat):
+                             TruePickups, feat, n_clusters):
     import pandas as pd
     print("train_test_split_compute() - started computing")
 
     amplitude_lists = []
     frequency_lists = []
-    for i in range(30):
+    for i in range(n_clusters):
         ampli = np.abs(np.fft.fft(regionWisePickup_Jan_2016[i][0:4096]))
         freq = np.abs(np.fft.fftfreq(4096, 1))
         ampli_indices = np.argsort(-ampli)[1:]
@@ -131,12 +131,12 @@ def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, p
             amplitude_lists.append(amplitude_values)
             frequency_lists.append(frequency_values)
 
-    train_previousFive_pickups = [feat[i * 4459:(4459 * i + 3567)] for i in range(30)]
-    test_previousFive_pickups = [feat[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(30)]
-    train_fourier_frequencies = [frequency_lists[i * 4459:(4459 * i + 3567)] for i in range(30)]
-    test_fourier_frequencies = [frequency_lists[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(30)]
-    train_fourier_amplitudes = [amplitude_lists[i * 4459:(4459 * i + 3567)] for i in range(30)]
-    test_fourier_amplitudes = [amplitude_lists[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(30)]
+    train_previousFive_pickups = [feat[i * 4459:(4459 * i + 3567)] for i in range(n_clusters)]
+    test_previousFive_pickups = [feat[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(n_clusters)]
+    train_fourier_frequencies = [frequency_lists[i * 4459:(4459 * i + 3567)] for i in range(n_clusters)]
+    test_fourier_frequencies = [frequency_lists[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(n_clusters)]
+    train_fourier_amplitudes = [amplitude_lists[i * 4459:(4459 * i + 3567)] for i in range(n_clusters)]
+    test_fourier_amplitudes = [amplitude_lists[(i * 4459) + 3567:(4459 * (i + 1))] for i in range(n_clusters)]
 
     print(
         "Train Data: Total number of clusters = {}. Number of points in each cluster = {}. Total number of training points = {}".format(
@@ -165,7 +165,7 @@ def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, p
     test_freq = []
     train_amp = []
     test_amp = []
-    for i in range(30):
+    for i in range(n_clusters):
         train_pickups.extend(train_previousFive_pickups[i])
         test_pickups.extend(test_previousFive_pickups[i])
         train_freq.extend(train_fourier_frequencies[i])
@@ -206,13 +206,13 @@ def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, p
     return train_df, train_TruePickups_flat, test_df, test_TruePickups_flat
 
 
-def compute_predicted_pickup_values(regionWisePickup_Jan_2016):
+def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
     print("compute_predicted_pickup_values() - started computing...")
     predicted_pickup_values = []
     predicted_pickup_values_list = []
 
     window_size = 2
-    for i in range(30):
+    for i in range(n_clusters):
         for j in range(4464):
             if j == 0:
                 predicted_pickup_values.append(0)
@@ -240,7 +240,7 @@ def compute_predicted_pickup_values(regionWisePickup_Jan_2016):
     return predicted_pickup_values_list
 
 
-def compute_pickups(k_means_model, regionWisePickup_Jan_2016):
+def compute_pickups(k_means_model, regionWisePickup_Jan_2016, n_clusters):
     TruePickups = []
     lat = []
     lon = []
@@ -249,7 +249,7 @@ def compute_pickups(k_means_model, regionWisePickup_Jan_2016):
 
     centerOfRegions = k_means_model.get_centers()
     feat = [0] * number_of_time_stamps
-    for i in range(30):
+    for i in range(n_clusters):
         lat.append([centerOfRegions[i][0]] * 4459)
         lon.append([centerOfRegions[i][1]] * 4459)
         day_of_week.append([int(((int(j / 144) % 7) + 5) % 7) for j in range(5, 4464)])
@@ -260,9 +260,9 @@ def compute_pickups(k_means_model, regionWisePickup_Jan_2016):
     return TruePickups, lat, lon, day_of_week, feat
 
 
-def getUniqueBinsWithPickups(dataframe):
+def getUniqueBinsWithPickups(dataframe, n_clusters):
     values = []
-    for i in range(30):  # we have total 30 clusters
+    for i in range(n_clusters):
         cluster_id = dataframe[dataframe["pickup_cluster"] == i]
         unique_clus_id = list(set(cluster_id["time_bin"]))
         unique_clus_id.sort()  # inplace sorting
@@ -270,10 +270,10 @@ def getUniqueBinsWithPickups(dataframe):
     return values
 
 
-def fillMissingWithZero(numberOfPickups, correspondingTimeBin):
+def fillMissingWithZero(numberOfPickups, correspondingTimeBin, n_clusters):
     ind = 0
     smoothed_regions = []
-    for c in range(0, 30):
+    for c in range(0, n_clusters):
         smoothed_bins = []
         for t in range(4464):  # there are total 4464 time bins in both Jan-2015 & Feb-2016.
             if t in correspondingTimeBin[c]:  # if a time bin is present in "correspondingTimeBin" in cluster 'c',
@@ -286,11 +286,11 @@ def fillMissingWithZero(numberOfPickups, correspondingTimeBin):
     return smoothed_regions
 
 
-def smoothing(numberOfPickups, correspondingTimeBin):
+def smoothing(numberOfPickups, correspondingTimeBin,n_clusters):
     ind = 0
     repeat = 0
     smoothed_region = []
-    for cluster in range(0, 30):
+    for cluster in range(0, n_clusters):
         smoothed_bin = []
         for t1 in range(4464):
             if repeat != 0:  # this will ensure that we shall not fill the pickup values again which we already filled by smoothing
@@ -349,14 +349,14 @@ def countZeros(num):
     return count
 
 
-def simple_moving_average_ratios(ratios):
+def simple_moving_average_ratios(ratios, n_clusters):
     predicted_ratio = (ratios["Ratio"].values)[0]
     predicted_ratio_values = []
     predicted_pickup_values = []
     absolute_error = []
     squared_error = []
     window_size = 3
-    for i in range(4464 * 30):
+    for i in range(4464 * n_clusters):
         if i % 4464 == 0:
             predicted_ratio_values.append(0)
             predicted_pickup_values.append(0)
@@ -387,13 +387,13 @@ def simple_moving_average_ratios(ratios):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def simple_moving_average_predictions(ratios):
+def simple_moving_average_predictions(ratios, n_clusters):
     predicted_pickup = (ratios["Prediction"].values)[0]
     predicted_pickup_values = []
     absolute_error = []
     squared_error = []
     window_size = 2
-    for i in range(4464 * 30):
+    for i in range(4464 * n_clusters):
         if i % 4464 == 0:
             predicted_pickup_values.append(0)
             absolute_error.append(0)
@@ -420,14 +420,14 @@ def simple_moving_average_predictions(ratios):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def weighted_moving_average_ratios(ratios):
+def weighted_moving_average_ratios(ratios, n_clusters):
     predicted_ratio = (ratios["Ratio"].values)[0]
     predicted_ratio_values = []
     predicted_pickup_values = []
     absolute_error = []
     squared_error = []
     window_size = 4
-    for i in range(4464 * 30):
+    for i in range(4464 * n_clusters):
         if i % 4464 == 0:
             predicted_ratio_values.append(0)
             predicted_pickup_values.append(0)
@@ -466,13 +466,13 @@ def weighted_moving_average_ratios(ratios):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def weighted_moving_average_predictions(ratios):
+def weighted_moving_average_predictions(ratios, n_clusters):
     predicted_pickup = (ratios["Prediction"].values)[0]
     predicted_pickup_values = []
     absolute_error = []
     squared_error = []
     window_size = 2
-    for i in range(4464 * 30):
+    for i in range(4464 * n_clusters):
         if i % 4464 == 0:
             predicted_pickup_values.append(0)
             absolute_error.append(0)
@@ -507,14 +507,14 @@ def weighted_moving_average_predictions(ratios):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def exponential_weighted_moving_average_ratios(ratios):
+def exponential_weighted_moving_average_ratios(ratios, n_clusters):
     predicted_ratio = (ratios["Ratio"].values)[0]
     predicted_ratio_values = []
     predicted_pickup_values = []
     absolute_error = []
     squared_error = []
     alpha = 0.5
-    for i in range(4464 * 30):
+    for i in range(4464 * n_clusters):
         if i % 4464 == 0:
             predicted_ratio_values.append(0)
             predicted_pickup_values.append(0)
@@ -538,13 +538,13 @@ def exponential_weighted_moving_average_ratios(ratios):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def exponential_weighted_moving_average_predictions(ratios):
+def exponential_weighted_moving_average_predictions(ratios, n_clusters):
     predicted_pickup = (ratios["Prediction"].values)[0]
     predicted_pickup_values = []
     absolute_error = []
     squared_error = []
     alpha = 0.5
-    for i in range(4464 * 30):
+    for i in range(4464 * n_clusters):
         if i % 4464 == 0:
             predicted_pickup_values.append(0)
             absolute_error.append(0)
@@ -585,6 +585,6 @@ def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE):
         clusters_min_dist.update(min_distance(regionCenters, totalClusters))
     print("Finished procedure of choosing clusters count. Time taken = " + str(datetime.now() - startTime))
     for k in sorted(clusters_min_dist, key=clusters_min_dist.get, reverse=True):
-        if clusters_min_dist[k] > MIN_CLUSTER_DISTANCE:
+        if clusters_min_dist[k] <= MIN_CLUSTER_DISTANCE:
             print("Appropriate clusters number: ", k)
             return k
