@@ -1,12 +1,13 @@
-import dask.dataframe as dd
 import pandas as pd
-import numpy as np
+from pyspark.sql import SQLContext
+from pyspark.sql.functions import col
+
 import models.models_train as models
 from preprocessors import functions as fun
 from models.Kmeans import KmeansModel
-from datetime import datetime
-import sqlalchemy
-import psycopg2
+from datetime import datetime as DateTimeFormatter
+from pyspark.sql import SparkSession
+from pyspark import SparkConf, SparkContext
 
 MIN_CLUSTER_DISTANCE = 0.5
 
@@ -14,28 +15,57 @@ DATA2015 = "E:\\diplom\predictormodel\\static\\yellow_tripdata_2015-01.csv"
 DATA2016 = "E:\\diplom\predictormodel\\static\\yellow_tripdata_2016-01.csv"
 
 
-def load_2015_sql():
-    print("sql start")
-    username = 'adminapp'
-    password = 'adminapp'
-    hostname = 'localhost'
-    port = '5432'
-    database_name = 'taxi_db'
-    connection_string = 'postgresql://{0}:{1}@{2}:{3}/{4}'.format(username, password, hostname, port, database_name)
-    data = dd.read_sql_table(index_col="id", uri=connection_string, table="records")
-    print("sql finished")
-    return data
+def configure_jdbc():
+    import os
+    os.environ[
+        'PYSPARK_SUBMIT_ARGS'] = '--packages org.postgresql:postgresql:42.1.1 pyspark-shell --driver-memory 4g ' \
+                                 'pyspark-shell '
+
+
+def load_data_spark():
+    configure_jdbc()
+
+    # conf = SparkConf().setMaster("local").setAppName("PredictorApi")
+    # sc = SparkContext(conf=conf)
+    # SparkContext.setSystemProperty('spark.executor.memory', '6g')
+    # SparkContext.setSystemProperty('spark.driver.memory', '6g')
+    # sc.setLogLevel("ERROR")
+    # sqlContext = SQLContext(sc)
+    # df = sqlContext.read.jdbc(url=url, table='records', properties=properties)
+
+    properties = {
+        "driver": "org.postgresql.Driver",
+        "spark.jars": "postgresql-42.2.19.jar"
+    }
+
+    url = 'jdbc:postgresql://localhost:5432/taxi_db?user=adminapp&password=adminapp'
+
+    spark = SparkSession.builder.appName('abc').master('local').getOrCreate()
+    df = spark.read.csv('static/yellow_tripdata_2015-01.csv', header=True)
+    # print("Count: ", df.count())
+    print(df)
+
+    def filter_condition(x, year):
+        return DateTimeFormatter.strptime(x['tpep_pickup_datetime'], "%Y-%m-%d %H:%M:%S").year == year
+
+    data_2015 = df.rdd.filter(lambda x: filter_condition(x, 2015))
+    print("2015: ", data_2015.count())
+
+    data_2016 = df.rdd.filter(lambda x: filter_condition(x, 2016))
+    print("2016: ", data_2016.count())
+
+    return data_2015, data_2016
 
 
 def init_preprocessing(xg, k_means_model):
     print("init_preprocessing() - started")
+    data_2015, data_2016 = load_data_spark()
     # data_2015 = dd.read_csv(DATA2015)
     # data_2016 = dd.read_csv(DATA2016)
-    #
-    # new_frame_cleaned = fun.preprocess(data_2015)
-    # new_frame_cleaned2 = fun.preprocess(data_2016)
-    new_frame_cleaned = pd.read_csv("E:\\diplom\\pythonProject\\static\\processed_2015_df.csv")
-    new_frame_cleaned2 = pd.read_csv("E:\\diplom\\pythonProject\\static\\processed_2016_df.csv")
+    new_frame_cleaned = fun.preprocess(data_2015)
+    new_frame_cleaned2 = fun.preprocess(data_2016)
+    # new_frame_cleaned = pd.read_csv("E:\\diplom\\pythonProject\\static\\processed_2015_df.csv")
+    # new_frame_cleaned2 = pd.read_csv("E:\\diplom\\pythonProject\\static\\processed_2016_df.csv")
 
     coord = new_frame_cleaned[["pickup_latitude", "pickup_longitude"]].values
     n_clusters = fun.pick_clusters_count(coord, MIN_CLUSTER_DISTANCE)
@@ -92,5 +122,5 @@ def enrich_prediction_request(xg, k_means: KmeansModel, lat, lng, timestamp):
     xg.predict(model_dto_df)
 
 
-def get_weekday(timestamp: datetime):
+def get_weekday(timestamp):
     return timestamp.now().weekday()

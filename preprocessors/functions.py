@@ -3,6 +3,8 @@ import gpxpy.geo
 from datetime import datetime
 import time
 import math
+
+from pyspark.rdd import PipelinedRDD
 from sklearn.cluster import MiniBatchKMeans
 
 
@@ -34,15 +36,24 @@ def clean_points_by_incorrect_speed(df):
     return df_cleaned
 
 
-def df_with_trip_times(df):
+def df_with_trip_times(spark_df:PipelinedRDD):
     startTime = datetime.now()
-    duration = df[["tpep_pickup_datetime", "tpep_dropoff_datetime"]].compute()
-    pickup_time = [time_to_unix(pkup) for pkup in duration["tpep_pickup_datetime"].values]
-    dropoff_time = [time_to_unix(drpof) for drpof in duration["tpep_dropoff_datetime"].values]
+
+    spark_df.map()
+    pickup_time = []
+    for row in spark_df.collect():
+        res = row["tpep_pickup_datetime"].strip()
+        pickup_time.append(time_to_unix(res))
+
+    dropoff_time = []
+    for row in spark_df.collect():
+        res = row["tpep_dropoff_datetime"].strip()
+        dropoff_time.append(time_to_unix(res))
+
     trip_duration = (np.array(dropoff_time) - np.array(pickup_time)) / float(60)  # trip duration in minutes
 
-    NewFrame = df[['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
-                   'dropoff_latitude', 'total_amount']].compute()
+    NewFrame = spark_df[['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
+                   'dropoff_latitude', 'total_amount']]
     NewFrame["trip_duration"] = trip_duration
     NewFrame["pickup_time"] = pickup_time
     NewFrame["speed"] = (NewFrame["trip_distance"] / NewFrame["trip_duration"]) * 60
