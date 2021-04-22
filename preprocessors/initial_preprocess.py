@@ -1,13 +1,10 @@
 import pandas as pd
-from pyspark.sql import SQLContext
-from pyspark.sql.functions import col
+from pyspark.sql import DataFrame
 
 import models.models_train as models
 from preprocessors import functions as fun
 from models.Kmeans import KmeansModel
-from datetime import datetime as DateTimeFormatter
 from pyspark.sql import SparkSession
-from pyspark import SparkConf, SparkContext
 
 MIN_CLUSTER_DISTANCE = 0.5
 
@@ -15,32 +12,26 @@ DATA2015 = "E:\\diplom\predictormodel\\static\\yellow_tripdata_2015-01.csv"
 DATA2016 = "E:\\diplom\predictormodel\\static\\yellow_tripdata_2016-01.csv"
 
 
-def configure_spark():
+def configure_spark() -> SparkSession:
     import os
     os.environ[
         'PYSPARK_SUBMIT_ARGS'] = '--driver-memory 4g ' \
                                  'pyspark-shell '
+    spark = SparkSession.builder \
+        .appName('abc') \
+        .config("spark.driver.maxResultSize", "0") \
+        .master('local').getOrCreate()
+    return spark
 
 
 def load_data_spark():
-    configure_spark()
+    spark: SparkSession = configure_spark()
 
-    data_2015_uri = 'hdfs://localhost:9000/csv/yellow_tripdata_2015-01.csv'
-    data_2016_uri = 'hdfs://localhost:9000/csv/yellow_tripdata_2016-01.csv'
+    data_2015_uri: str = 'hdfs://localhost:9000/raw_data/csv/test.csv'
+    data_2016_uri: str = 'hdfs://localhost:9000/raw_data/csv/test.csv'
 
-    spark = SparkSession.builder.appName('abc').master('local').getOrCreate()
-
-    data_2015 = spark.read.csv(data_2015_uri, header=True)
-    data_2016 = spark.read.csv(data_2016_uri, header=True)
-
-    # def filter_condition(x, year):
-    #     return DateTimeFormatter.strptime(x['tpep_pickup_datetime'], "%Y-%m-%d %H:%M:%S").year == year
-
-    # data_2015 = df.rdd.filter(lambda x: filter_condition(x, 2015))
-    # print("2015: ", data_2015.count())
-    #
-    # data_2016 = df.rdd.filter(lambda x: filter_condition(x, 2016))
-    # print("2016: ", data_2016.count())
+    data_2015: DataFrame = spark.read.csv(data_2015_uri, header=True)
+    data_2016: DataFrame = spark.read.csv(data_2016_uri, header=True)
 
     return data_2015, data_2016
 
@@ -49,9 +40,8 @@ def init_preprocessing(xg, k_means_model):
     print("init_preprocessing() - started")
     data_2015, data_2016 = load_data_spark()
 
-    new_frame_cleaned = fun.preprocess(data_2015)
-    new_frame_cleaned2 = fun.preprocess(data_2016)
-
+    new_frame_cleaned: DataFrame = fun.preprocess(data_2015)
+    new_frame_cleaned2: DataFrame = fun.preprocess(data_2016)
 
     coord = new_frame_cleaned[["pickup_latitude", "pickup_longitude"]].values
     n_clusters = fun.pick_clusters_count(coord, MIN_CLUSTER_DISTANCE)

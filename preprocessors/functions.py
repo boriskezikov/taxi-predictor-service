@@ -4,7 +4,10 @@ from datetime import datetime
 import time
 import math
 
+import pyspark
 from pyspark.rdd import PipelinedRDD
+from pyspark.sql import DataFrame
+from pyspark.sql.functions import col
 from sklearn.cluster import MiniBatchKMeans
 
 
@@ -36,30 +39,34 @@ def clean_points_by_incorrect_speed(df):
     return df_cleaned
 
 
-def df_with_trip_times(spark_df: PipelinedRDD):
-    startTime = datetime.now()
+def df_with_trip_times(df: DataFrame) -> DataFrame:
+    # calculate trip duration and speed and add as columns to df
+    def __add_duration_and_speed_cols(rdd: PipelinedRDD) -> DataFrame:
+        frame: DataFrame = rdd.toDF()
+        frame = frame.withColumn("trip_duration", (frame["dropoff_time"] - frame["pickup_time"]) / float(60))
+        frame = frame.withColumn("speed", (frame["trip_distance"] / frame["trip_duration"]) * 60)
+        return frame
 
-    spark_df.map()
-    pickup_time = []
-    for row in spark_df.collect():
-        res = row["tpep_pickup_datetime"].strip()
-        pickup_time.append(time_to_unix(res))
+    # supplier for datetime values in a row
+    def __map_time(row: pyspark.sql.types.Row):
+        pup_timestamp = time_to_unix(row['tpep_pickup_datetime'].strip())
+        doff_timestamp = time_to_unix(row['tpep_dropoff_datetime'].strip())
+        row_dict = row.asDict()
+        row_dict['pickup_time'] = pup_timestamp
+        row_dict['dropoff_time'] = doff_timestamp
+        del row_dict['tpep_pickup_datetime']
+        del row_dict['tpep_dropoff_datetime']
+        return pyspark.sql.types.Row(**row_dict)
 
-    dropoff_time = []
-    for row in spark_df.collect():
-        res = row["tpep_dropoff_datetime"].strip()
-        dropoff_time.append(time_to_unix(res))
+    spark_rdd: PipelinedRDD = df.rdd.map(lambda row: __map_time(row))
+    spark_df: DataFrame = __add_duration_and_speed_cols(spark_rdd)
 
-    trip_duration = (np.array(dropoff_time) - np.array(pickup_time)) / float(60)  # trip duration in minutes
+    cols_to_keep = ['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
+                    'dropoff_latitude', 'total_amount', 'trip_duration', 'pickup_time', 'speed']
 
-    NewFrame = spark_df[['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
-                         'dropoff_latitude', 'total_amount']]
-    NewFrame["trip_duration"] = trip_duration
-    NewFrame["pickup_time"] = pickup_time
-    NewFrame["speed"] = (NewFrame["trip_distance"] / NewFrame["trip_duration"]) * 60
-
-    print("Time taken for creation of dataframe is {}".format(datetime.now() - startTime))
-    return NewFrame
+    # drop unnecessary columns
+    spark_df = spark_df.drop(*(set(spark_df.columns) - set(cols_to_keep)))
+    return spark_df
 
 
 def min_distance(regionCenters, totalClusters):
@@ -575,7 +582,7 @@ def exponential_weighted_moving_average_predictions(ratios, n_clusters):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def preprocess(data):
+def preprocess(data: DataFrame) -> DataFrame:
     print("preprocess() - Starting baseline preprocessing")
     print("preprocess() - Calculating trip times")
     df = df_with_trip_times(data)
