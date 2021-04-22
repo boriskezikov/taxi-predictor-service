@@ -36,7 +36,7 @@ def clean_points_by_incorrect_speed(df):
     return df_cleaned
 
 
-def df_with_trip_times(spark_df:PipelinedRDD):
+def df_with_trip_times(spark_df: PipelinedRDD):
     startTime = datetime.now()
 
     spark_df.map()
@@ -53,7 +53,7 @@ def df_with_trip_times(spark_df:PipelinedRDD):
     trip_duration = (np.array(dropoff_time) - np.array(pickup_time)) / float(60)  # trip duration in minutes
 
     NewFrame = spark_df[['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
-                   'dropoff_latitude', 'total_amount']]
+                         'dropoff_latitude', 'total_amount']]
     NewFrame["trip_duration"] = trip_duration
     NewFrame["pickup_time"] = pickup_time
     NewFrame["speed"] = (NewFrame["trip_distance"] / NewFrame["trip_duration"]) * 60
@@ -297,7 +297,7 @@ def fillMissingWithZero(numberOfPickups, correspondingTimeBin, n_clusters):
     return smoothed_regions
 
 
-def smoothing(numberOfPickups, correspondingTimeBin,n_clusters):
+def smoothing(numberOfPickups, correspondingTimeBin, n_clusters):
     ind = 0
     repeat = 0
     smoothed_region = []
