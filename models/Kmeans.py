@@ -1,30 +1,51 @@
-from sklearn.cluster import MiniBatchKMeans
+from pyspark.ml.clustering import KMeans, KMeansModel
+
+from pyspark.sql import SparkSession
+from datetime import datetime
 
 
-class KmeansModel:
+class KMeansModelCustom:
 
-    def __init__(self):
-        self.model = None
+    def __init__(self, hdfs_uri, use_pretrained):
         self.data = None
-        self.clusters = None
+        self.hdfs_uri = hdfs_uri + "/models/trained/kmeans/"
+        self.sc = SparkSession.getActiveSession()
+        if use_pretrained:
+            self.model: KMeansModel = self.__load_from_hdfs()
+        else:
+            self.model:KMeansModel = None
 
-    def train(self, data, n_clusters):
-        self.model = MiniBatchKMeans(n_clusters=n_clusters, batch_size=10000)
+    def train(self, data, n_clusters, save=False):
+        if self.model is not None:
+            raise RuntimeError("This model already trained! Create new instance and set pretrained flag as False")
         self.data = data
         print("k-means() - training")
-        self.clusters = self.model.fit(self.data)
+        kmeans = KMeans(k=n_clusters)
+        self.model = kmeans.fit(self.data)
         print("k-means() - training finished")
+        if save:
+            self.__save_to_hdfs__()
         return self
+
+    def __save_to_hdfs__(self):
+        self.model.write().overwrite().save(self.hdfs_uri)
+        print("k-means() - model saved by uri {}".format(self.hdfs_uri))
+
+    def __load_from_hdfs(self):
+        sameModel = KMeansModel.load(self.hdfs_uri)
+        print("k-means() - model loaded from uri {}".format(self.hdfs_uri))
+        return sameModel
 
     def predict(self, to_predict):
         print("k-means() - discovering cluster")
-        return self.model.predict(to_predict)
+        self.model.setPredictionCol("pickup_cluster")
+        return self.model.transform(to_predict)
 
     def get_centers(self):
-        return self.model.cluster_centers_
+        return self.model.clusterCenters()
 
     def find_center(self, cluster_number):
-        centers = self.model.cluster_centers_
+        centers = self.model.clusterCenters()
 
     def __is_initialized__(self):
         if self.model is None:

@@ -8,10 +8,13 @@ import pyspark
 from pyspark.rdd import PipelinedRDD
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col
+from pyspark.sql.types import Row, DoubleType
 from sklearn.cluster import MiniBatchKMeans
+from models.Kmeans import KMeansModelCustom
+from pyspark.sql.types import IntegerType
 
 
-def time_to_unix(t):
+def time_to_unix(t) -> float:
     change = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")  # this will convert the String time into datetime format
     t_tuple = change.timetuple()  # this will convert the datetime formatted time into structured time
     return time.mktime(t_tuple) + 3600  # this will convert structured time into unix-time.
@@ -39,33 +42,34 @@ def clean_points_by_incorrect_speed(df):
     return df_cleaned
 
 
-def df_with_trip_times(df: DataFrame) -> DataFrame:
+def update_columns(df: DataFrame) -> DataFrame:
     # calculate trip duration and speed and add as columns to df
     def __add_duration_and_speed_cols(rdd: PipelinedRDD) -> DataFrame:
         frame: DataFrame = rdd.toDF()
-        frame = frame.withColumn("trip_duration", (frame["dropoff_time"] - frame["pickup_time"]) / float(60))
-        frame = frame.withColumn("speed", (frame["trip_distance"] / frame["trip_duration"]) * 60)
+        frame: DataFrame = frame.withColumn("trip_duration", (frame["dropoff_time"] - frame["pickup_time"]) / float(60))
+        frame: DataFrame = frame.withColumn("speed", (frame["trip_distance"] / frame["trip_duration"]) * 60)
         return frame
 
     # supplier for datetime values in a row
-    def __map_time(row: pyspark.sql.types.Row):
-        pup_timestamp = time_to_unix(row['tpep_pickup_datetime'].strip())
-        doff_timestamp = time_to_unix(row['tpep_dropoff_datetime'].strip())
+    def __map_time(row: Row) -> Row:
+        pup_timestamp: float = time_to_unix(row['tpep_pickup_datetime'].strip())
+        doff_timestamp: float = time_to_unix(row['tpep_dropoff_datetime'].strip())
         row_dict = row.asDict()
         row_dict['pickup_time'] = pup_timestamp
         row_dict['dropoff_time'] = doff_timestamp
         del row_dict['tpep_pickup_datetime']
         del row_dict['tpep_dropoff_datetime']
-        return pyspark.sql.types.Row(**row_dict)
+        return Row(**row_dict)
 
     spark_rdd: PipelinedRDD = df.rdd.map(lambda row: __map_time(row))
     spark_df: DataFrame = __add_duration_and_speed_cols(spark_rdd)
 
-    cols_to_keep = ['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
-                    'dropoff_latitude', 'total_amount', 'trip_duration', 'pickup_time', 'speed']
+    cols_to_keep: list = ['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude',
+                          'dropoff_longitude',
+                          'dropoff_latitude', 'total_amount', 'trip_duration', 'pickup_time', 'speed']
 
     # drop unnecessary columns
-    spark_df = spark_df.drop(*(set(spark_df.columns) - set(cols_to_keep)))
+    spark_df: DataFrame = spark_df.drop(*(set(spark_df.columns) - set(cols_to_keep)))
     return spark_df
 
 
@@ -100,9 +104,32 @@ def min_distance(regionCenters, totalClusters):
     return {totalClusters: min_distance}
 
 
-def makingRegions(noOfRegions, coord):
-    regions = MiniBatchKMeans(n_clusters=noOfRegions, batch_size=10000).fit(coord)
-    regionCenters = regions.cluster_centers_
+def coords_to_vector(lat_lng_df):
+    def cast_to_double(lat_lng_df_inner: DataFrame):
+        cols = lat_lng_df_inner.columns
+        if len(cols) != 2:
+            raise RuntimeError("Coordinated df must contain only 2 columns [lat, lng] but {0} found!".format(len(cols)))
+        coord_doubles = lat_lng_df_inner.withColumn(cols[0], lat_lng_df_inner[0].cast(DoubleType())). \
+            withColumn(cols[1], lat_lng_df_inner[1].cast(DoubleType()))
+        return cols, coord_doubles
+
+    def vectorize(cols, coords):
+        from pyspark.ml.feature import VectorAssembler
+
+        vectorAss = VectorAssembler(inputCols=cols, outputCol="features")
+        vectorized_coords = vectorAss.transform(coords)
+        return vectorized_coords
+
+    cols, coord_doubles = cast_to_double(lat_lng_df)
+    vectorized_coords = vectorize(cols, coord_doubles)
+    return vectorized_coords
+
+
+def makingRegions(noOfRegions: int, coord: DataFrame, hdfs_uri: str):
+    vectorized_coords = coords_to_vector(coord)
+    kmeans_model = KMeansModelCustom(hdfs_uri, use_pretrained=False)
+    kmeans_model.train(vectorized_coords, n_clusters=noOfRegions)
+    regionCenters = kmeans_model.get_centers()
     totalClusters = len(regionCenters)
     return regionCenters, totalClusters
 
@@ -118,15 +145,14 @@ def changingLabels(num):
         return str(num / 10 ** 9) + "B"
 
 
-def pickup_10min_bins(dataframe, month, year):
+def pickup_10min_bins(frame: DataFrame, month, year):
     print("pickup_10min_bins() - Picking time bins")
-    pickupTime = dataframe["pickup_time"].values
     unixTime = [1420070400, 1451606400]
     unix_year = unixTime[year - 2015]
-    time_10min_bin = [int((i - unix_year) / 600) for i in pickupTime]
-    dataframe["time_bin"] = np.array(time_10min_bin)
+    frame = frame.withColumn("time_bin", ((frame["pickup_time"] - unix_year) / 600).cast(
+        IntegerType()))  # time_10min_bin = [int((i - unix_year) / 600) for i in pickupTime]
     print("pickup_10min_bins() - Picking time bins finished")
-    return dataframe
+    return frame
 
 
 def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, predicted_pickup_values_list,
@@ -278,17 +304,22 @@ def compute_pickups(k_means_model, regionWisePickup_Jan_2016, n_clusters):
     return TruePickups, lat, lon, day_of_week, feat
 
 
-def getUniqueBinsWithPickups(dataframe, n_clusters):
-    values = []
+def getUniqueBinsWithPickups(dataframe: DataFrame, n_clusters) -> DataFrame:
+    from pyspark.sql import SparkSession
+    spark = SparkSession.getActiveSession()
+
+    values: DataFrame = spark.createDataFrame([], "time_bin int")
+
     for i in range(n_clusters):
-        cluster_id = dataframe[dataframe["pickup_cluster"] == i]
-        unique_clus_id = list(set(cluster_id["time_bin"]))
-        unique_clus_id.sort()  # inplace sorting
-        values.append(unique_clus_id)
+        cluster_id: DataFrame = dataframe[dataframe["pickup_cluster"] == i]
+        unique_clus_id = cluster_id.select("time_bin").distinct().sort("time_bin", ascending=False)
+        # unique_clus_id = list(set(cluster_id["time_bin"]))
+        values = values.union(unique_clus_id)
     return values
 
 
 def fillMissingWithZero(numberOfPickups, correspondingTimeBin, n_clusters):
+
     ind = 0
     smoothed_regions = []
     for c in range(0, n_clusters):
@@ -585,7 +616,7 @@ def exponential_weighted_moving_average_predictions(ratios, n_clusters):
 def preprocess(data: DataFrame) -> DataFrame:
     print("preprocess() - Starting baseline preprocessing")
     print("preprocess() - Calculating trip times")
-    df = df_with_trip_times(data)
+    df = update_columns(data)
     print("preprocess() - Cleaning records with incorrect driver speed ")
     df = clean_points_by_incorrect_speed(df)
     print("preprocess() - Cleaning records out of area")
@@ -594,12 +625,12 @@ def preprocess(data: DataFrame) -> DataFrame:
     return df
 
 
-def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE):
+def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE, hdfs_uri):
     print("Beginning procedure of choosing clusters count..")
     startTime = datetime.now()
     clusters_min_dist = {}
     for i in range(10, 100, 10):
-        regionCenters, totalClusters = makingRegions(i, coord)
+        regionCenters, totalClusters = makingRegions(i, coord, hdfs_uri)
         clusters_min_dist.update(min_distance(regionCenters, totalClusters))
     print("Finished procedure of choosing clusters count. Time taken = " + str(datetime.now() - startTime))
     for k in sorted(clusters_min_dist, key=clusters_min_dist.get, reverse=True):
