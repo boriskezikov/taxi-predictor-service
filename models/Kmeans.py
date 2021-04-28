@@ -3,12 +3,14 @@ from pyspark.ml.clustering import KMeans, KMeansModel
 from pyspark.sql import SparkSession
 from datetime import datetime
 
+from preprocessors import HDFS_HOST
+
 
 class KMeansModelCustom:
 
-    def __init__(self, hdfs_uri, use_pretrained):
+    def __init__(self, use_pretrained):
         self.data = None
-        self.hdfs_uri = hdfs_uri + "models/trained/kmeans/{}".format(datetime.now().date())
+        self.hdfs_uri = HDFS_HOST + "models/trained/kmeans/{}".format(datetime.now().date())
         self.sc = SparkSession.getActiveSession()
         if use_pretrained:
             self.model: KMeansModel = self.__load_from_hdfs()

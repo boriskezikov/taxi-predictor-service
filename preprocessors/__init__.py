@@ -7,9 +7,8 @@ RAW_DATA_DRIVE = HDFS_HOST + "/data/csv/raw/"
 
 def configure_spark() -> SparkSession:
     import os
-    os.environ[
-        'PYSPARK_SUBMIT_ARGS'] = '--driver-memory 8g ' \
-                                 'pyspark-shell '
+    os.environ['PYSPARK_SUBMIT_ARGS'] = '--driver-memory 8g ' \
+                                        'pyspark-shell '
     spark = SparkSession.builder \
         .appName('taxi-predictor') \
         .config("spark.driver.maxResultSize", "0") \

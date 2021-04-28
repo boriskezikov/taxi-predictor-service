@@ -13,6 +13,8 @@ from sklearn.cluster import MiniBatchKMeans
 from models.Kmeans import KMeansModelCustom
 from pyspark.sql.types import IntegerType
 
+from preprocessors import HDFS_HOST
+
 
 def time_to_unix(t) -> float:
     change = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")  # this will convert the String time into datetime format
@@ -119,7 +121,7 @@ def coords_to_vector(lat_lng_df):
 
 def makingRegions(noOfRegions: int, coord: DataFrame, hdfs_uri: str):
     vectorized_coords = coords_to_vector(coord)
-    kmeans_model = KMeansModelCustom(hdfs_uri, use_pretrained=False)
+    kmeans_model = KMeansModelCustom(use_pretrained=False)
     kmeans_model.train(vectorized_coords, n_clusters=noOfRegions)
     regionCenters = kmeans_model.get_centers()
     totalClusters = len(regionCenters)
@@ -147,7 +149,7 @@ def pickup_10min_bins(frame: DataFrame, month, year):
     return frame
 
 
-def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, predicted_pickup_values_list,
+def train_test_split_compute(pickup_data_df:DataFrame, lat, lon, day_of_week, predicted_pickup_values_list,
                              TruePickups, feat, n_clusters):
     import pandas as pd
     print("train_test_split_compute() - started computing")
@@ -242,7 +244,7 @@ def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, p
     return train_df, train_TruePickups_flat, test_df, test_TruePickups_flat
 
 
-def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
+def compute_predicted_pickup_values(pickup_data_df:DataFrame, n_clusters):
     print("compute_predicted_pickup_values() - started computing...")
     predicted_pickup_values = []
     predicted_pickup_values_list = []
@@ -276,13 +278,14 @@ def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
     return predicted_pickup_values_list
 
 
-def compute_pickups(k_means_model, regionWisePickup_Jan_2016, n_clusters):
+def compute_pickups(pickup_data_df:DataFrame, n_clusters):
     TruePickups = []
     lat = []
     lon = []
     day_of_week = []
     number_of_time_stamps = 5
 
+    k_means_model = KMeansModelCustom(use_pretrained=True)
     centerOfRegions = k_means_model.get_centers()
     feat = [0] * number_of_time_stamps
     for i in range(n_clusters):
@@ -315,30 +318,27 @@ def fill_missing_tbins_with_zero(pickup_bin_count_df: DataFrame, n_clusters):
     print("fill_missing_tbins_with_zero() - starting..")
     ss = SparkSession.getActiveSession()
     print("fill_missing_tbins_with_zero() - caching data...")
-    pickup_bin_count_df: pd.DataFrame = pickup_bin_count_df.toPandas()
+    pickup_bin_count_df_pd: pd.DataFrame = pickup_bin_count_df.toPandas()
     print("fill_missing_tbins_with_zero() - caching finished")
     for cluster_id in range(0, n_clusters):
-        print("fill_missing_tbins_with_zero() - processing cluster {0}. {1} - left".format(cluster_id,
-                                                                                           n_clusters - cluster_id))
         now_for_cluster = datetime.now()
 
+        current_cluster_df = pickup_bin_count_df_pd.loc[pickup_bin_count_df_pd.pickup_cluster == cluster_id]
+        time_bins = current_cluster_df["time_bin"].unique()
         for time_bin in range(4464):  # todo добавить динамическое вычилсление количества бинов по месяцу
-            flag = ((pickup_bin_count_df["pickup_cluster"] == cluster_id) & (
-                    pickup_bin_count_df["time_bin"] == time_bin)).any()
-            if not flag:
-                pickup_bin_count_df = pickup_bin_count_df.append({
+            #todo проверить совместимость типов str
+            if time_bin not in time_bins:
+                pickup_bin_count_df_pd = pickup_bin_count_df_pd.append({
                     "pickup_cluster": cluster_id,
                     "time_bin": time_bin,
                     "count": 0
                 }, ignore_index=True)
-                print("inserting 0 for bin {}".format(time_bin))
-            else:
-                print("skipping 0 for bin {}".format(time_bin))
         print("fill_missing_tbins_with_zero() - cluster {0} processing finished. time taken {1}".format(cluster_id,
                                                                                                         datetime.now() - now_for_cluster))
-
+    pickup_bin_count_df_pd = pickup_bin_count_df_pd.loc[pickup_bin_count_df_pd.time_bin >= 0]
     print("fill_missing_tbins_with_zero() - time taken {}".format(datetime.now() - now))
-    return ss.createDataFrame(pickup_bin_count_df)
+    assert len(pickup_bin_count_df_pd.index) == 4464 * 30
+    return ss.createDataFrame(pickup_bin_count_df_pd)
 
 
 def fill_missing_tbins_with_zero_withoud_collecting(pickup_bin_count_df: DataFrame, n_clusters):
@@ -652,7 +652,7 @@ def preprocess(data: DataFrame) -> DataFrame:
     print("preprocess() - Cleaning records with incorrect driver speed ")
     df = clean_points_by_incorrect_speed(df)
     print("preprocess() - Cleaning records out of area")
-    df = clean_points_out_of_area(df)
+    df: DataFrame = clean_points_out_of_area(df)
     print("preprocess() - Finished baseline preprocessing")
     return df
 

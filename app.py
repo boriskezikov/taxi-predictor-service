@@ -43,7 +43,7 @@ def predict_cluster():
     ltd = req.args.get('driver_lat')
     lng = req.args.get('driver_lng')
     f = np.array([ltd, lng]).reshape((1, -1))
-    k_means_model = KMeansModelCustom(use_pretrained=True, hdfs_uri="hdfs://localhost:9000")
+    k_means_model = KMeansModelCustom(use_pretrained=True)
     prediction = k_means_model.predict(f)
     return jsonify(prediction.tolist())
 
