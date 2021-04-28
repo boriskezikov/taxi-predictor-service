@@ -14,7 +14,7 @@ xg_model = XGBoostModel()
 def activate_job():
     def run_job():
         print("Preprocessing thread started at ", datetime.now())
-        init_preprocessing(xg_model)
+        init_preprocessing()
         print("Preprocessing thread finished at ", datetime.now())
 
     thread = threading.Thread(target=run_job)

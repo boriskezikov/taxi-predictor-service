@@ -6,9 +6,9 @@ import math
 
 import pyspark
 from pyspark.rdd import PipelinedRDD
-from pyspark.sql import DataFrame
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col
-from pyspark.sql.types import Row, DoubleType
+from pyspark.sql.types import Row, DoubleType, ArrayType, StringType
 from sklearn.cluster import MiniBatchKMeans
 from models.Kmeans import KMeansModelCustom
 from pyspark.sql.types import IntegerType
@@ -44,25 +44,17 @@ def clean_points_by_incorrect_speed(df):
 
 def update_columns(df: DataFrame) -> DataFrame:
     # calculate trip duration and speed and add as columns to df
-    def __add_duration_and_speed_cols(rdd: PipelinedRDD) -> DataFrame:
-        frame: DataFrame = rdd.toDF()
+    def __add_duration_and_speed_cols(frame: DataFrame) -> DataFrame:
         frame: DataFrame = frame.withColumn("trip_duration", (frame["dropoff_time"] - frame["pickup_time"]) / float(60))
         frame: DataFrame = frame.withColumn("speed", (frame["trip_distance"] / frame["trip_duration"]) * 60)
         return frame
 
-    # supplier for datetime values in a row
-    def __map_time(row: Row) -> Row:
-        pup_timestamp: float = time_to_unix(row['tpep_pickup_datetime'].strip())
-        doff_timestamp: float = time_to_unix(row['tpep_dropoff_datetime'].strip())
-        row_dict = row.asDict()
-        row_dict['pickup_time'] = pup_timestamp
-        row_dict['dropoff_time'] = doff_timestamp
-        del row_dict['tpep_pickup_datetime']
-        del row_dict['tpep_dropoff_datetime']
-        return Row(**row_dict)
+    from pyspark.sql.functions import unix_timestamp
 
-    spark_rdd: PipelinedRDD = df.rdd.map(lambda row: __map_time(row))
-    spark_df: DataFrame = __add_duration_and_speed_cols(spark_rdd)
+    df: DataFrame = df.withColumn("pickup_time", unix_timestamp("tpep_pickup_datetime"))
+    df: DataFrame = df.withColumn("dropoff_time", unix_timestamp("tpep_dropoff_datetime"))
+
+    spark_df: DataFrame = __add_duration_and_speed_cols(df)
 
     cols_to_keep: list = ['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude',
                           'dropoff_longitude',
@@ -150,7 +142,7 @@ def pickup_10min_bins(frame: DataFrame, month, year):
     unixTime = [1420070400, 1451606400]
     unix_year = unixTime[year - 2015]
     frame = frame.withColumn("time_bin", ((frame["pickup_time"] - unix_year) / 600).cast(
-        IntegerType()))  # time_10min_bin = [int((i - unix_year) / 600) for i in pickupTime]
+        IntegerType()))
     print("pickup_10min_bins() - Picking time bins finished")
     return frame
 
@@ -304,35 +296,75 @@ def compute_pickups(k_means_model, regionWisePickup_Jan_2016, n_clusters):
     return TruePickups, lat, lon, day_of_week, feat
 
 
-def getUniqueBinsWithPickups(dataframe: DataFrame, n_clusters) -> DataFrame:
-    from pyspark.sql import SparkSession
-    spark = SparkSession.getActiveSession()
-
-    values: DataFrame = spark.createDataFrame([], "time_bin int")
+# возвращает список датафреймов, где индекс в списке == номеру кластера, а датафрейм содержит список уникальных временных бинов
+def getUniqueBinsWithPickups(dataframe: DataFrame, n_clusters) -> list:
+    values = []
 
     for i in range(n_clusters):
         cluster_id: DataFrame = dataframe[dataframe["pickup_cluster"] == i]
         unique_clus_id = cluster_id.select("time_bin").distinct().sort("time_bin", ascending=False)
         # unique_clus_id = list(set(cluster_id["time_bin"]))
-        values = values.union(unique_clus_id)
+        values.append(unique_clus_id)
     return values
 
 
-def fillMissingWithZero(numberOfPickups, correspondingTimeBin, n_clusters):
+def fill_missing_tbins_with_zero(pickup_bin_count_df: DataFrame, n_clusters):
+    import pandas as pd
 
-    ind = 0
-    smoothed_regions = []
-    for c in range(0, n_clusters):
-        smoothed_bins = []
-        for t in range(4464):  # there are total 4464 time bins in both Jan-2015 & Feb-2016.
-            if t in correspondingTimeBin[c]:  # if a time bin is present in "correspondingTimeBin" in cluster 'c',
-                # then it means there is a pickup, in this case, we are simply adding number of pickups, else we are adding 0.
-                smoothed_bins.append(numberOfPickups[ind])
-                ind += 1
+    now = datetime.now()
+    print("fill_missing_tbins_with_zero() - starting..")
+    ss = SparkSession.getActiveSession()
+    print("fill_missing_tbins_with_zero() - caching data...")
+    pickup_bin_count_df: pd.DataFrame = pickup_bin_count_df.toPandas()
+    print("fill_missing_tbins_with_zero() - caching finished")
+    for cluster_id in range(0, n_clusters):
+        print("fill_missing_tbins_with_zero() - processing cluster {0}. {1} - left".format(cluster_id,
+                                                                                           n_clusters - cluster_id))
+        now_for_cluster = datetime.now()
+
+        for time_bin in range(4464):  # todo добавить динамическое вычилсление количества бинов по месяцу
+            flag = ((pickup_bin_count_df["pickup_cluster"] == cluster_id) & (
+                    pickup_bin_count_df["time_bin"] == time_bin)).any()
+            if not flag:
+                pickup_bin_count_df = pickup_bin_count_df.append({
+                    "pickup_cluster": cluster_id,
+                    "time_bin": time_bin,
+                    "count": 0
+                }, ignore_index=True)
+                print("inserting 0 for bin {}".format(time_bin))
             else:
-                smoothed_bins.append(0)
-        smoothed_regions.extend(smoothed_bins)
-    return smoothed_regions
+                print("skipping 0 for bin {}".format(time_bin))
+        print("fill_missing_tbins_with_zero() - cluster {0} processing finished. time taken {1}".format(cluster_id,
+                                                                                                        datetime.now() - now_for_cluster))
+
+    print("fill_missing_tbins_with_zero() - time taken {}".format(datetime.now() - now))
+    return ss.createDataFrame(pickup_bin_count_df)
+
+
+def fill_missing_tbins_with_zero_withoud_collecting(pickup_bin_count_df: DataFrame, n_clusters):
+    now = datetime.now()
+    print("fill_missing_tbins_with_zero() - starting..")
+    ss = SparkSession.getActiveSession()
+    print("fill_missing_tbins_with_zero() - caching data...")
+    pickup_bin_count_df = pickup_bin_count_df.cache()
+    print("fill_missing_tbins_with_zero() - caching finished")
+    for cluster_id in range(0, n_clusters):
+        print("fill_missing_tbins_with_zero() - processing cluster {0}. {1} - left".format(cluster_id,
+                                                                                           n_clusters - cluster_id))
+        for time_bin in range(4464):  # todo добавить динамическое вычилсление количества бинов по месяцу
+            row = ss.createDataFrame([(cluster_id, time_bin, 0)], "pickup_cluster int, time_bin int, count int")
+            pickup_bin_count_df = pickup_bin_count_df.union(row)
+
+    from pyspark.sql.window import Window
+    import pyspark.sql.functions as F
+    from pyspark.sql.functions import col
+
+    pickup_bin_count_df = pickup_bin_count_df.select("pickup_cluster", "time_bin", "count", F.row_number().over(
+        Window.partitionBy("count").orderBy(pickup_bin_count_df['count'])).alias("row_num")).sort(col("count"))
+    pickup_bin_count_df = pickup_bin_count_df.filter(pickup_bin_count_df.row_num == 1).show()
+
+    print("fill_missing_tbins_with_zero() - time taken {}".format(datetime.now() - now))
+    return pickup_bin_count_df
 
 
 def smoothing(numberOfPickups, correspondingTimeBin, n_clusters):
