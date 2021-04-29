@@ -5,7 +5,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import SGDRegressor
-from models.XGBoost import XGBoostModel
+from models.XGBoost import XGBoostModelCustom
 
 
 def lin_regression(train_data, train_true, test_data, test_true):
@@ -54,8 +54,9 @@ def randomForest(train_data, train_true, test_data, test_true):
     return train_MAPE, train_MSE, test_MAPE, test_MSE
 
 
-def xgboost_reg(train_X, train_y, test_X, test_y, xg):
-    test_pred = xg.cv(train_X, train_y).train().predict(test_X)
+def xgboost_validate(train_X, train_y, test_X, test_y):
+    xg = XGBoostModelCustom(False)
+    test_pred = xg.cv(train_X, train_y).train(save=True).predict(test_X)
     test_MAPE = mean_absolute_error(test_y, test_pred) / (sum(test_y) / len(test_y))
     test_MSE = mean_squared_error(test_y, test_pred)
     print("xgboost_reg() - test MAPE: ", test_MAPE)

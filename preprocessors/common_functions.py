@@ -3,6 +3,7 @@ import gpxpy.geo
 from datetime import datetime
 import time
 import math
+import pandas as pd
 
 import pyspark
 from pyspark.rdd import PipelinedRDD
@@ -149,15 +150,17 @@ def pickup_10min_bins(frame: DataFrame, month, year):
     return frame
 
 
-def train_test_split_compute(pickup_data_df:DataFrame, lat, lon, day_of_week, predicted_pickup_values_list,
+def train_test_split_compute(pickup_data_df: DataFrame, lat, lon, day_of_week, predicted_pickup_values_list,
                              TruePickups, feat, n_clusters):
     import pandas as pd
     print("train_test_split_compute() - started computing")
+    pickup_data_df_pd: pd.DataFrame = pickup_data_df.toPandas()
 
     amplitude_lists = []
     frequency_lists = []
     for i in range(n_clusters):
-        ampli = np.abs(np.fft.fft(regionWisePickup_Jan_2016[i][0:4096]))
+        current_cluster_pickups_by_timebin = pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])["count"].tolist()
+        ampli = np.abs(np.fft.fft(current_cluster_pickups_by_timebin[0:4096]))
         freq = np.abs(np.fft.fftfreq(4096, 1))
         ampli_indices = np.argsort(-ampli)[1:]
         amplitude_values = []
@@ -244,13 +247,15 @@ def train_test_split_compute(pickup_data_df:DataFrame, lat, lon, day_of_week, pr
     return train_df, train_TruePickups_flat, test_df, test_TruePickups_flat
 
 
-def compute_predicted_pickup_values(pickup_data_df:DataFrame, n_clusters):
+def compute_weighted_moving_average(pickup_data_df: DataFrame, n_clusters):
     print("compute_predicted_pickup_values() - started computing...")
     predicted_pickup_values = []
     predicted_pickup_values_list = []
+    pickup_data_df_pd: pd.DataFrame = pickup_data_df.toPandas()
 
     window_size = 2
     for i in range(n_clusters):
+        current_cluster_pickups_by_timebin = pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])["count"].tolist()
         for j in range(4464):
             if j == 0:
                 predicted_pickup_values.append(0)
@@ -259,7 +264,7 @@ def compute_predicted_pickup_values(pickup_data_df:DataFrame, n_clusters):
                     sumPickups = 0
                     sumOfWeights = 0
                     for k in range(window_size, 0, -1):
-                        sumPickups += k * (regionWisePickup_Jan_2016[i][j - window_size + (k - 1)])
+                        sumPickups += k * (current_cluster_pickups_by_timebin[j - window_size + (k - 1)])
                         sumOfWeights += k
                     predicted_value = int(sumPickups / sumOfWeights)
                     predicted_pickup_values.append(predicted_value)
@@ -267,7 +272,7 @@ def compute_predicted_pickup_values(pickup_data_df:DataFrame, n_clusters):
                     sumPickups = 0
                     sumOfWeights = 0
                     for k in range(j, 0, -1):
-                        sumPickups += k * regionWisePickup_Jan_2016[i][k - 1]
+                        sumPickups += k * current_cluster_pickups_by_timebin[k - 1]
                         sumOfWeights += k
                     predicted_value = int(sumPickups / sumOfWeights)
                     predicted_pickup_values.append(predicted_value)
@@ -278,23 +283,26 @@ def compute_predicted_pickup_values(pickup_data_df:DataFrame, n_clusters):
     return predicted_pickup_values_list
 
 
-def compute_pickups(pickup_data_df:DataFrame, n_clusters):
+def compute_pickups(pickup_data_df: DataFrame, n_clusters):
     TruePickups = []
     lat = []
     lon = []
     day_of_week = []
     number_of_time_stamps = 5
+    pickup_data_df_pd: pd.DataFrame = pickup_data_df.toPandas()
 
     k_means_model = KMeansModelCustom(use_pretrained=True)
     centerOfRegions = k_means_model.get_centers()
     feat = [0] * number_of_time_stamps
     for i in range(n_clusters):
+        current_cluster_pickups_by_timebin = pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])["count"].tolist()
+
         lat.append([centerOfRegions[i][0]] * 4459)
         lon.append([centerOfRegions[i][1]] * 4459)
         day_of_week.append([int(((int(j / 144) % 7) + 5) % 7) for j in range(5, 4464)])
-        feat = np.vstack((feat, [regionWisePickup_Jan_2016[i][k:k + number_of_time_stamps] for k in
-                                 range(0, len(regionWisePickup_Jan_2016[i]) - (number_of_time_stamps))]))
-        TruePickups.append(regionWisePickup_Jan_2016[i][5:])
+        feat = np.vstack((feat, [current_cluster_pickups_by_timebin[k:k + number_of_time_stamps] for k in
+                                 range(0, len(current_cluster_pickups_by_timebin) - (number_of_time_stamps))]))
+        TruePickups.append(current_cluster_pickups_by_timebin[5:])
     feat = feat[1:]
     return TruePickups, lat, lon, day_of_week, feat
 
@@ -312,8 +320,6 @@ def getUniqueBinsWithPickups(dataframe: DataFrame, n_clusters) -> list:
 
 
 def fill_missing_tbins_with_zero(pickup_bin_count_df: DataFrame, n_clusters):
-    import pandas as pd
-
     now = datetime.now()
     print("fill_missing_tbins_with_zero() - starting..")
     ss = SparkSession.getActiveSession()
@@ -326,7 +332,7 @@ def fill_missing_tbins_with_zero(pickup_bin_count_df: DataFrame, n_clusters):
         current_cluster_df = pickup_bin_count_df_pd.loc[pickup_bin_count_df_pd.pickup_cluster == cluster_id]
         time_bins = current_cluster_df["time_bin"].unique()
         for time_bin in range(4464):  # todo добавить динамическое вычилсление количества бинов по месяцу
-            #todo проверить совместимость типов str
+            # todo проверить совместимость типов str
             if time_bin not in time_bins:
                 pickup_bin_count_df_pd = pickup_bin_count_df_pd.append({
                     "pickup_cluster": cluster_id,

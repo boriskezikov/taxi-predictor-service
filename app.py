@@ -2,13 +2,12 @@ import flask
 import threading
 from flask import jsonify
 from preprocessors.initial_preprocess import init_preprocessing
-from models.XGBoost import XGBoostModel
+from models.XGBoost import XGBoostModelCustom
 from models.Kmeans import KMeansModelCustom
 from datetime import datetime
 import numpy as np
 
 app = flask.Flask(__name__)
-xg_model = XGBoostModel()
 
 
 def activate_job():
@@ -27,14 +26,14 @@ def predict_xgb():
     ltd = req.args.get('driver_lat')
     lng = req.args.get('driver_lng')
     f = np.array([ltd, lng]).reshape((1, -1))
-    prediction = xg_model.predict(f)
-    return jsonify(prediction.tolist())
+    # prediction = xg_model.predict(f)
+    # return jsonify(prediction.tolist())
 
 
 @app.route('/api/v1/retrain', methods=['GET'])
 def retrain():
     print("Request accepted")
-    xg_model.train()
+    # xg_model.train()
 
 
 @app.route('/api/v1/cluster', methods=['POST'])
