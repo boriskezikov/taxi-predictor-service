@@ -3,10 +3,12 @@ from datetime import datetime
 import pandas as pd
 from pyspark.sql import DataFrame
 
-import models.models_train as models
 from preprocessors import common_functions as fun, RAW_DATA_DRIVE, PROCESSED_DATA_DRIVE, configure_spark
 from models.Kmeans import KMeansModelCustom
 from pyspark.sql import SparkSession
+from pandas import DataFrame
+from pyspark.sql import SparkSession
+import models.GbtModel as gbt
 
 MIN_CLUSTER_DISTANCE = 0.5
 
@@ -81,10 +83,35 @@ def init_preprocessing():
         jan_2016_fillZero, lat, lon, day_of_week, predicted_pickup_values_list,
         TruePickups, feat, n_clusters)
 
-    models.xgboost_validate(train_df, train_TruePickups_flat, test_df, test_TruePickups_flat, spark)
+    xgboost_validate(train_df, train_TruePickups_flat, test_df, test_TruePickups_flat, spark)
 
 
-def enrich_prediction_request(xg, k_means: KMeansModelCustom, lat, lng, timestamp):
+def xgboost_validate(train_X: DataFrame, train_y, test_X, test_y, ss: SparkSession):
+    import pandas as pd
+
+    def vectorize(cols, coords):
+        from pyspark.ml.feature import VectorAssembler
+
+        vectorAss = VectorAssembler(inputCols=cols, outputCol="features")
+        vectorized_coords = vectorAss.transform(coords)
+        return vectorized_coords
+
+    features_cols = train_X.columns.tolist()
+
+    train_X["target"] = pd.Series(train_y, index=train_X.index)
+    test_X["target"] = pd.Series(test_y, index=test_X.index)
+
+    train_df_spark = ss.createDataFrame(train_X)
+    test_df_spark = ss.createDataFrame(test_X)
+
+    vectorized_train = vectorize(features_cols, train_df_spark)
+    vectorized_test = vectorize(features_cols, test_df_spark)
+
+    model = gbt.GBTModelCustom(False)
+    model.cv().train(vectorized_train).validate(vectorized_test)
+
+
+def enrich_prediction_request(xg, lat, lng, timestamp):
     def get_weekday(timestamp):
         return timestamp.now().weekday()
 

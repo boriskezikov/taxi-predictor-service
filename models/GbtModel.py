@@ -48,7 +48,6 @@ class GBTModelCustom:
         print("RMSE on test data = %g" % rmse)
         print("R2 on test data = %g" % r2)
         print("VAR on test data = %g" % var)
-        return predictions.toPandas()["prediction"]
 
     def predict(self, to_predict):
         print("GBT() - predicting.. ")
