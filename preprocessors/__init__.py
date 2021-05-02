@@ -6,9 +6,12 @@ RAW_DATA_DRIVE = HDFS_HOST + "/data/csv/raw/"
 
 
 def configure_spark() -> SparkSession:
+    import findspark
     import os
     os.environ['PYSPARK_SUBMIT_ARGS'] = '--driver-memory 8g ' \
                                         'pyspark-shell '
+
+    findspark.init()
     spark = SparkSession.builder \
         .appName('taxi-predictor') \
         .config("spark.driver.maxResultSize", "0") \
@@ -16,5 +19,4 @@ def configure_spark() -> SparkSession:
         .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
         .config("spark.sql.execution.arrow.pyspark.fallback.enabled", "true") \
         .master('local[*]').getOrCreate()
-
     return spark

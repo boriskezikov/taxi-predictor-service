@@ -4,7 +4,7 @@ import pandas as pd
 from pyspark.sql import DataFrame
 
 import models.models_train as models
-from preprocessors import common_functions as fun, RAW_DATA_DRIVE, HDFS_HOST, PROCESSED_DATA_DRIVE, configure_spark
+from preprocessors import common_functions as fun, RAW_DATA_DRIVE, PROCESSED_DATA_DRIVE, configure_spark
 from models.Kmeans import KMeansModelCustom
 from pyspark.sql import SparkSession
 
@@ -24,7 +24,7 @@ def load_data_spark():
 
 
 def init_preprocessing():
-    # print("init_preprocessing() - started")
+    print("init_preprocessing() - started")
     # data_2015, data_2016 = load_data_spark()
     #
     # new_frame_cleaned: DataFrame = fun.preprocess(data_2015)
@@ -81,7 +81,7 @@ def init_preprocessing():
         jan_2016_fillZero, lat, lon, day_of_week, predicted_pickup_values_list,
         TruePickups, feat, n_clusters)
 
-    models.xgboost_validate(train_df, train_TruePickups_flat, test_df, test_TruePickups_flat)
+    models.xgboost_validate(train_df, train_TruePickups_flat, test_df, test_TruePickups_flat, spark)
 
 
 def enrich_prediction_request(xg, k_means: KMeansModelCustom, lat, lng, timestamp):
@@ -97,4 +97,4 @@ def enrich_prediction_request(xg, k_means: KMeansModelCustom, lat, lng, timestam
     model_dto_df._set_value(col="Latitude", value=lat, index=0)
     model_dto_df._set_value(col="Longitude", value=lng, index=0)
     model_dto_df._set_value(col="WeekDay", value=get_weekday(timestamp), index=0)
-    xg.predict(model_dto_df)
+    xg.validate(model_dto_df)

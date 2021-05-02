@@ -2,7 +2,7 @@ import flask
 import threading
 from flask import jsonify
 from preprocessors.initial_preprocess import init_preprocessing
-from models.XGBoost import XGBoostModelCustom
+from models.GbtModel import GBTModelCustom
 from models.Kmeans import KMeansModelCustom
 from datetime import datetime
 import numpy as np

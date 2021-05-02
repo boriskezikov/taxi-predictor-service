@@ -1,63 +1,28 @@
-import joblib
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import mean_absolute_error
-from sklearn.metrics import mean_squared_error
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import SGDRegressor
-from models.XGBoost import XGBoostModelCustom
+from pandas import DataFrame
+from pyspark.sql import SparkSession
+import models.GbtModel as gbt
 
 
-def lin_regression(train_data, train_true, test_data, test_true):
-    train_std = StandardScaler().fit_transform(train_data)
-    test_std = StandardScaler().fit_transform(test_data)
+def xgboost_validate(train_X: DataFrame, train_y, test_X, test_y, ss: SparkSession):
+    import pandas as pd
 
-    clf = SGDRegressor(loss="squared_loss", penalty="l2")
-    values = [10 ** -14, 10 ** -12, 10 ** -10, 10 ** -8, 10 ** -6, 10 ** -4, 10 ** -2, 10 ** 0, 10 ** 2, 10 ** 4,
-              10 ** 6]
-    hyper_parameter = {"alpha": values}
-    best_parameter = GridSearchCV(clf, hyper_parameter, scoring="neg_mean_absolute_error", cv=3)
-    best_parameter.fit(train_std, train_true)
-    alpha = best_parameter.best_params_["alpha"]
+    def vectorize(cols, coords):
+        from pyspark.ml.feature import VectorAssembler
 
-    clf = SGDRegressor(loss="squared_loss", penalty="l2", alpha=alpha)
-    clf.fit(train_std, train_true)
-    train_pred = clf.predict(train_std)
-    train_MAPE = mean_absolute_error(train_true, train_pred) / (sum(train_true) / len(train_true))
-    train_MSE = mean_squared_error(train_true, train_pred)
-    test_pred = clf.predict(test_std)
-    test_MAPE = mean_absolute_error(test_true, test_pred) / (sum(test_true) / len(test_true))
-    test_MSE = mean_squared_error(test_true, test_pred)
-    joblib.dump(clf, "../static/lr-trained")
+        vectorAss = VectorAssembler(inputCols=cols, outputCol="features")
+        vectorized_coords = vectorAss.transform(coords)
+        return vectorized_coords
 
-    return train_MAPE, train_MSE, test_MAPE, test_MSE
+    features_cols = train_X.columns.tolist()
 
+    train_X["target"] = pd.Series(train_y, index=train_X.index)
+    test_X["target"] = pd.Series(test_y, index=test_X.index)
 
-def randomForest(train_data, train_true, test_data, test_true):
-    values = [10, 40, 80, 150, 600, 800]
-    clf = RandomForestRegressor(n_jobs=-1)
-    hyper_parameter = {"n_estimators": values}
-    best_parameter = GridSearchCV(clf, hyper_parameter, scoring="neg_mean_absolute_error", cv=3)
-    best_parameter.fit(train_data, train_true)
-    estimators = best_parameter.best_params_["n_estimators"]
+    train_df_spark = ss.createDataFrame(train_X)
+    test_df_spark = ss.createDataFrame(test_X)
 
-    clf = RandomForestRegressor(n_estimators=estimators, n_jobs=-1)
-    clf.fit(train_data, train_true)
-    train_pred = clf.predict(train_data)
-    train_MAPE = mean_absolute_error(train_true, train_pred) / (sum(train_true) / len(train_true))
-    train_MSE = mean_squared_error(train_true, train_pred)
-    test_pred = clf.predict(test_data)
-    test_MAPE = mean_absolute_error(test_true, test_pred) / (sum(test_true) / len(test_true))
-    test_MSE = mean_squared_error(test_true, test_pred)
-    joblib.dump(clf, "../static/rf-trained")
+    vectorized_train = vectorize(features_cols, train_df_spark)
+    vectorized_test = vectorize(features_cols, test_df_spark)
 
-    return train_MAPE, train_MSE, test_MAPE, test_MSE
-
-
-def xgboost_validate(train_X, train_y, test_X, test_y):
-    xg = XGBoostModelCustom(False)
-    test_pred = xg.cv(train_X, train_y).train(save=True).predict(test_X)
-    test_MAPE = mean_absolute_error(test_y, test_pred) / (sum(test_y) / len(test_y))
-    test_MSE = mean_squared_error(test_y, test_pred)
-    print("xgboost_reg() - test MAPE: ", test_MAPE)
-    print("xgboost_reg() - test MSE: ", test_MSE)
+    model = gbt.GBTModelCustom(False)
+    test_pred = model.cv().train(vectorized_train).validate(vectorized_test)
