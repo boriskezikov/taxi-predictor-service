@@ -1,9 +1,9 @@
 import flask
 import threading
 from flask import jsonify
-from preprocessors.initial_preprocess import init_preprocessing
-from models.GbtModel import GBTModelCustom
+from preprocessors.preprocessing import start_processing
 from models.Kmeans import KMeansModelCustom
+import service.service as s
 from datetime import datetime
 import numpy as np
 
@@ -13,7 +13,7 @@ app = flask.Flask(__name__)
 def activate_job():
     def run_job():
         print("Preprocessing thread started at ", datetime.now())
-        init_preprocessing()
+        start_processing()
         print("Preprocessing thread finished at ", datetime.now())
 
     thread = threading.Thread(target=run_job)
@@ -25,9 +25,10 @@ def predict_xgb():
     req = flask.request
     ltd = req.args.get('driver_lat')
     lng = req.args.get('driver_lng')
-    f = np.array([ltd, lng]).reshape((1, -1))
-    # prediction = xg_model.predict(f)
-    # return jsonify(prediction.tolist())
+    n_clusters = req.args.get('n_clusters')
+    # timestamp = req.args.get('timestamp')
+    prediction = s.enrich_prediction_request(ltd, lng, n_clusters, datetime.now())
+    return jsonify(prediction)
 
 
 @app.route('/api/v1/retrain', methods=['GET'])
@@ -48,5 +49,5 @@ def predict_cluster():
 
 
 if __name__ == '__main__':
-    activate_job()
+    # activate_job()
     app.run()

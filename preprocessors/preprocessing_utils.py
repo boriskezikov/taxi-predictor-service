@@ -5,16 +5,10 @@ import time
 import math
 import pandas as pd
 
-import pyspark
-from pyspark.rdd import PipelinedRDD
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col
-from pyspark.sql.types import Row, DoubleType, ArrayType, StringType
-from sklearn.cluster import MiniBatchKMeans
+from pyspark.sql.types import DoubleType
 from models.Kmeans import KMeansModelCustom
 from pyspark.sql.types import IntegerType
-
-from preprocessors import HDFS_HOST
 
 
 def time_to_unix(t) -> float:
@@ -108,25 +102,26 @@ def coords_to_vector(lat_lng_df):
             withColumn(cols[1], lat_lng_df_inner[1].cast(DoubleType()))
         return cols, coord_doubles
 
-    def vectorize(cols, coords):
-        from pyspark.ml.feature import VectorAssembler
-
-        vectorAss = VectorAssembler(inputCols=cols, outputCol="features")
-        vectorized_coords = vectorAss.transform(coords)
-        return vectorized_coords
-
     cols, coord_doubles = cast_to_double(lat_lng_df)
     vectorized_coords = vectorize(cols, coord_doubles)
     return vectorized_coords
 
 
-def makingRegions(noOfRegions: int, coord: DataFrame, hdfs_uri: str):
+def makingRegions(noOfRegions: int, coord: DataFrame):
     vectorized_coords = coords_to_vector(coord)
     kmeans_model = KMeansModelCustom(use_pretrained=False)
     kmeans_model.train(vectorized_coords, n_clusters=noOfRegions)
     regionCenters = kmeans_model.get_centers()
     totalClusters = len(regionCenters)
     return regionCenters, totalClusters
+
+
+def vectorize(cols, coords):
+    from pyspark.ml.feature import VectorAssembler
+
+    vectorAss = VectorAssembler(inputCols=cols, outputCol="features")
+    vectorized_coords = vectorAss.transform(coords)
+    return vectorized_coords
 
 
 def changingLabels(num):
@@ -159,7 +154,9 @@ def train_test_split_compute(pickup_data_df: DataFrame, lat, lon, day_of_week, p
     amplitude_lists = []
     frequency_lists = []
     for i in range(n_clusters):
-        current_cluster_pickups_by_timebin = pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])["count"].tolist()
+        current_cluster_pickups_by_timebin = \
+            pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])[
+                "count"].tolist()
         ampli = np.abs(np.fft.fft(current_cluster_pickups_by_timebin[0:4096]))
         freq = np.abs(np.fft.fftfreq(4096, 1))
         ampli_indices = np.argsort(-ampli)[1:]
@@ -255,7 +252,9 @@ def compute_weighted_moving_average(pickup_data_df: DataFrame, n_clusters):
 
     window_size = 2
     for i in range(n_clusters):
-        current_cluster_pickups_by_timebin = pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])["count"].tolist()
+        current_cluster_pickups_by_timebin = \
+            pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])[
+                "count"].tolist()
         for j in range(4464):
             if j == 0:
                 predicted_pickup_values.append(0)
@@ -295,7 +294,9 @@ def compute_pickups(pickup_data_df: DataFrame, n_clusters):
     centerOfRegions = k_means_model.get_centers()
     feat = [0] * number_of_time_stamps
     for i in range(n_clusters):
-        current_cluster_pickups_by_timebin = pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])["count"].tolist()
+        current_cluster_pickups_by_timebin = \
+            pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])[
+                "count"].tolist()
 
         lat.append([centerOfRegions[i][0]] * 4459)
         lon.append([centerOfRegions[i][1]] * 4459)
@@ -663,15 +664,15 @@ def preprocess(data: DataFrame) -> DataFrame:
     return df
 
 
-def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE, hdfs_uri):
+def pick_clusters_count(coord, cluster_distance_min):
     print("Beginning procedure of choosing clusters count..")
     startTime = datetime.now()
     clusters_min_dist = {}
     for i in range(10, 100, 10):
-        regionCenters, totalClusters = makingRegions(i, coord, hdfs_uri)
+        regionCenters, totalClusters = makingRegions(i, coord)
         clusters_min_dist.update(min_distance(regionCenters, totalClusters))
     print("Finished procedure of choosing clusters count. Time taken = " + str(datetime.now() - startTime))
     for k in sorted(clusters_min_dist, key=clusters_min_dist.get, reverse=True):
-        if clusters_min_dist[k] <= MIN_CLUSTER_DISTANCE:
-            print("Appropriate clusters number: ", k)
+        if clusters_min_dist[k] <= cluster_distance_min:
+            print("Picking clusters number: ", k)
             return k

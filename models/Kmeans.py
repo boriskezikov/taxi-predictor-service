@@ -10,7 +10,7 @@ class KMeansModelCustom:
 
     def __init__(self, use_pretrained):
         self.data = None
-        self.hdfs_uri = HDFS_HOST + "models/trained/kmeans/{}".format(datetime.now().date())
+        self.hdfs_uri = HDFS_HOST + "/models/trained/kmeans/{}".format(datetime.now().date())
         self.sc = SparkSession.getActiveSession()
         if use_pretrained:
             self.model: KMeansModel = self.__load_from_hdfs()
@@ -45,9 +45,6 @@ class KMeansModelCustom:
 
     def get_centers(self):
         return self.model.clusterCenters()
-
-    def find_center(self, cluster_number):
-        centers = self.model.clusterCenters()
 
     def __is_initialized__(self):
         if self.model is None:

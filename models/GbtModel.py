@@ -1,5 +1,5 @@
 from datetime import datetime
-from pyspark.ml.regression import GBTRegressor
+from pyspark.ml.regression import GBTRegressor, GBTRegressionModel
 from pyspark.ml.evaluation import RegressionEvaluator
 
 from pyspark.sql import SparkSession
@@ -11,7 +11,7 @@ class GBTModelCustom:
 
     def __init__(self, use_pretrained):
         self.train_data = None
-        self.hdfs_uri = HDFS_HOST + "models/trained/gbt-regressor/{}".format(datetime.now().date())
+        self.hdfs_uri = HDFS_HOST + "/models/trained/gbt-regressor/{}".format(datetime.now().date())
         self.sc = SparkSession.getActiveSession()
         self.use_pretrained = use_pretrained
         if use_pretrained:
@@ -33,7 +33,6 @@ class GBTModelCustom:
             print("GBT() - training...")
             self.model = self.model.fit(self.train_data)
             print("GBT() - training finished")
-            print("GBT() - evaluation: {}")
             self.__save_to_hdfs__()
         print("GBT() - train skipped")
         return self
@@ -53,7 +52,7 @@ class GBTModelCustom:
         print("GBT() - predicting.. ")
         self.model.getPredictionCol()
         predictions = self.model.transform(to_predict)
-        return predictions.toPandas()["prediction"]
+        return predictions
 
     def __save_to_hdfs__(self):
         self.model.write().overwrite().save(self.hdfs_uri)
@@ -69,7 +68,7 @@ class GBTModelCustom:
         return mae, mse, rmse, r2, var
 
     def __load_from_hdfs(self):
-        mdl = GBTRegressor.load(self.hdfs_uri)
+        mdl = GBTRegressionModel.load(self.hdfs_uri)
         print("GBT() - model loaded from uri {}".format(self.hdfs_uri))
         return mdl
 
