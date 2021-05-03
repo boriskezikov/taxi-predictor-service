@@ -3,10 +3,15 @@ import gpxpy.geo
 from datetime import datetime
 import time
 import math
-from sklearn.cluster import MiniBatchKMeans
+import pandas as pd
+
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.types import DoubleType
+from models.Kmeans import KMeansModelCustom
+from pyspark.sql.types import IntegerType
 
 
-def time_to_unix(t):
+def time_to_unix(t) -> float:
     change = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")  # this will convert the String time into datetime format
     t_tuple = change.timetuple()  # this will convert the datetime formatted time into structured time
     return time.mktime(t_tuple) + 3600  # this will convert structured time into unix-time.
@@ -34,21 +39,27 @@ def clean_points_by_incorrect_speed(df):
     return df_cleaned
 
 
-def df_with_trip_times(df):
-    startTime = datetime.now()
-    duration = df[["tpep_pickup_datetime", "tpep_dropoff_datetime"]].compute()
-    pickup_time = [time_to_unix(pkup) for pkup in duration["tpep_pickup_datetime"].values]
-    dropoff_time = [time_to_unix(drpof) for drpof in duration["tpep_dropoff_datetime"].values]
-    trip_duration = (np.array(dropoff_time) - np.array(pickup_time)) / float(60)  # trip duration in minutes
+def update_columns(df: DataFrame) -> DataFrame:
+    # calculate trip duration and speed and add as columns to df
+    def __add_duration_and_speed_cols(frame: DataFrame) -> DataFrame:
+        frame: DataFrame = frame.withColumn("trip_duration", (frame["dropoff_time"] - frame["pickup_time"]) / float(60))
+        frame: DataFrame = frame.withColumn("speed", (frame["trip_distance"] / frame["trip_duration"]) * 60)
+        return frame
 
-    NewFrame = df[['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude', 'dropoff_longitude',
-                   'dropoff_latitude', 'total_amount']].compute()
-    NewFrame["trip_duration"] = trip_duration
-    NewFrame["pickup_time"] = pickup_time
-    NewFrame["speed"] = (NewFrame["trip_distance"] / NewFrame["trip_duration"]) * 60
+    from pyspark.sql.functions import unix_timestamp
 
-    print("Time taken for creation of dataframe is {}".format(datetime.now() - startTime))
-    return NewFrame
+    df: DataFrame = df.withColumn("pickup_time", unix_timestamp("tpep_pickup_datetime"))
+    df: DataFrame = df.withColumn("dropoff_time", unix_timestamp("tpep_dropoff_datetime"))
+
+    spark_df: DataFrame = __add_duration_and_speed_cols(df)
+
+    cols_to_keep: list = ['passenger_count', 'trip_distance', 'pickup_longitude', 'pickup_latitude',
+                          'dropoff_longitude',
+                          'dropoff_latitude', 'total_amount', 'trip_duration', 'pickup_time', 'speed']
+
+    # drop unnecessary columns
+    spark_df: DataFrame = spark_df.drop(*(set(spark_df.columns) - set(cols_to_keep)))
+    return spark_df
 
 
 def min_distance(regionCenters, totalClusters):
@@ -82,11 +93,35 @@ def min_distance(regionCenters, totalClusters):
     return {totalClusters: min_distance}
 
 
-def makingRegions(noOfRegions, coord):
-    regions = MiniBatchKMeans(n_clusters=noOfRegions, batch_size=10000).fit(coord)
-    regionCenters = regions.cluster_centers_
+def coords_to_vector(lat_lng_df):
+    def cast_to_double(lat_lng_df_inner: DataFrame):
+        cols = lat_lng_df_inner.columns
+        if len(cols) != 2:
+            raise RuntimeError("Coordinated df must contain only 2 columns [lat, lng] but {0} found!".format(len(cols)))
+        coord_doubles = lat_lng_df_inner.withColumn(cols[0], lat_lng_df_inner[0].cast(DoubleType())). \
+            withColumn(cols[1], lat_lng_df_inner[1].cast(DoubleType()))
+        return cols, coord_doubles
+
+    cols, coord_doubles = cast_to_double(lat_lng_df)
+    vectorized_coords = vectorize(cols, coord_doubles)
+    return vectorized_coords
+
+
+def makingRegions(noOfRegions: int, coord: DataFrame):
+    vectorized_coords = coords_to_vector(coord)
+    kmeans_model = KMeansModelCustom(use_pretrained=False)
+    kmeans_model.train(vectorized_coords, n_clusters=noOfRegions)
+    regionCenters = kmeans_model.get_centers()
     totalClusters = len(regionCenters)
     return regionCenters, totalClusters
+
+
+def vectorize(cols, coords):
+    from pyspark.ml.feature import VectorAssembler
+
+    vectorAss = VectorAssembler(inputCols=cols, outputCol="features")
+    vectorized_coords = vectorAss.transform(coords)
+    return vectorized_coords
 
 
 def changingLabels(num):
@@ -100,26 +135,29 @@ def changingLabels(num):
         return str(num / 10 ** 9) + "B"
 
 
-def pickup_10min_bins(dataframe, month, year):
+def pickup_10min_bins(frame: DataFrame, month, year):
     print("pickup_10min_bins() - Picking time bins")
-    pickupTime = dataframe["pickup_time"].values
     unixTime = [1420070400, 1451606400]
     unix_year = unixTime[year - 2015]
-    time_10min_bin = [int((i - unix_year) / 600) for i in pickupTime]
-    dataframe["time_bin"] = np.array(time_10min_bin)
+    frame = frame.withColumn("time_bin", ((frame["pickup_time"] - unix_year) / 600).cast(
+        IntegerType()))
     print("pickup_10min_bins() - Picking time bins finished")
-    return dataframe
+    return frame
 
 
-def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, predicted_pickup_values_list,
+def train_test_split_compute(pickup_data_df: DataFrame, lat, lon, day_of_week, predicted_pickup_values_list,
                              TruePickups, feat, n_clusters):
     import pandas as pd
     print("train_test_split_compute() - started computing")
+    pickup_data_df_pd: pd.DataFrame = pickup_data_df.toPandas()
 
     amplitude_lists = []
     frequency_lists = []
     for i in range(n_clusters):
-        ampli = np.abs(np.fft.fft(regionWisePickup_Jan_2016[i][0:4096]))
+        current_cluster_pickups_by_timebin = \
+            pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])[
+                "count"].tolist()
+        ampli = np.abs(np.fft.fft(current_cluster_pickups_by_timebin[0:4096]))
         freq = np.abs(np.fft.fftfreq(4096, 1))
         ampli_indices = np.argsort(-ampli)[1:]
         amplitude_values = []
@@ -206,13 +244,17 @@ def train_test_split_compute(regionWisePickup_Jan_2016, lat, lon, day_of_week, p
     return train_df, train_TruePickups_flat, test_df, test_TruePickups_flat
 
 
-def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
+def compute_weighted_moving_average(pickup_data_df: DataFrame, n_clusters):
     print("compute_predicted_pickup_values() - started computing...")
     predicted_pickup_values = []
     predicted_pickup_values_list = []
+    pickup_data_df_pd: pd.DataFrame = pickup_data_df.toPandas()
 
     window_size = 2
     for i in range(n_clusters):
+        current_cluster_pickups_by_timebin = \
+            pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])[
+                "count"].tolist()
         for j in range(4464):
             if j == 0:
                 predicted_pickup_values.append(0)
@@ -221,7 +263,7 @@ def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
                     sumPickups = 0
                     sumOfWeights = 0
                     for k in range(window_size, 0, -1):
-                        sumPickups += k * (regionWisePickup_Jan_2016[i][j - window_size + (k - 1)])
+                        sumPickups += k * (current_cluster_pickups_by_timebin[j - window_size + (k - 1)])
                         sumOfWeights += k
                     predicted_value = int(sumPickups / sumOfWeights)
                     predicted_pickup_values.append(predicted_value)
@@ -229,7 +271,7 @@ def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
                     sumPickups = 0
                     sumOfWeights = 0
                     for k in range(j, 0, -1):
-                        sumPickups += k * regionWisePickup_Jan_2016[i][k - 1]
+                        sumPickups += k * current_cluster_pickups_by_timebin[k - 1]
                         sumOfWeights += k
                     predicted_value = int(sumPickups / sumOfWeights)
                     predicted_pickup_values.append(predicted_value)
@@ -240,53 +282,99 @@ def compute_predicted_pickup_values(regionWisePickup_Jan_2016, n_clusters):
     return predicted_pickup_values_list
 
 
-def compute_pickups(k_means_model, regionWisePickup_Jan_2016, n_clusters):
+def compute_pickups(pickup_data_df: DataFrame, n_clusters):
     TruePickups = []
     lat = []
     lon = []
     day_of_week = []
     number_of_time_stamps = 5
+    pickup_data_df_pd: pd.DataFrame = pickup_data_df.toPandas()
 
+    k_means_model = KMeansModelCustom(use_pretrained=True)
     centerOfRegions = k_means_model.get_centers()
     feat = [0] * number_of_time_stamps
     for i in range(n_clusters):
+        current_cluster_pickups_by_timebin = \
+            pickup_data_df_pd.loc[pickup_data_df_pd["pickup_cluster"] == i].sort_values(by=['time_bin'])[
+                "count"].tolist()
+
         lat.append([centerOfRegions[i][0]] * 4459)
         lon.append([centerOfRegions[i][1]] * 4459)
         day_of_week.append([int(((int(j / 144) % 7) + 5) % 7) for j in range(5, 4464)])
-        feat = np.vstack((feat, [regionWisePickup_Jan_2016[i][k:k + number_of_time_stamps] for k in
-                                 range(0, len(regionWisePickup_Jan_2016[i]) - (number_of_time_stamps))]))
-        TruePickups.append(regionWisePickup_Jan_2016[i][5:])
+        feat = np.vstack((feat, [current_cluster_pickups_by_timebin[k:k + number_of_time_stamps] for k in
+                                 range(0, len(current_cluster_pickups_by_timebin) - (number_of_time_stamps))]))
+        TruePickups.append(current_cluster_pickups_by_timebin[5:])
     feat = feat[1:]
     return TruePickups, lat, lon, day_of_week, feat
 
 
-def getUniqueBinsWithPickups(dataframe, n_clusters):
+# возвращает список датафреймов, где индекс в списке == номеру кластера, а датафрейм содержит список уникальных временных бинов
+def getUniqueBinsWithPickups(dataframe: DataFrame, n_clusters) -> list:
     values = []
+
     for i in range(n_clusters):
-        cluster_id = dataframe[dataframe["pickup_cluster"] == i]
-        unique_clus_id = list(set(cluster_id["time_bin"]))
-        unique_clus_id.sort()  # inplace sorting
+        cluster_id: DataFrame = dataframe[dataframe["pickup_cluster"] == i]
+        unique_clus_id = cluster_id.select("time_bin").distinct().sort("time_bin", ascending=False)
+        # unique_clus_id = list(set(cluster_id["time_bin"]))
         values.append(unique_clus_id)
     return values
 
 
-def fillMissingWithZero(numberOfPickups, correspondingTimeBin, n_clusters):
-    ind = 0
-    smoothed_regions = []
-    for c in range(0, n_clusters):
-        smoothed_bins = []
-        for t in range(4464):  # there are total 4464 time bins in both Jan-2015 & Feb-2016.
-            if t in correspondingTimeBin[c]:  # if a time bin is present in "correspondingTimeBin" in cluster 'c',
-                # then it means there is a pickup, in this case, we are simply adding number of pickups, else we are adding 0.
-                smoothed_bins.append(numberOfPickups[ind])
-                ind += 1
-            else:
-                smoothed_bins.append(0)
-        smoothed_regions.extend(smoothed_bins)
-    return smoothed_regions
+def fill_missing_tbins_with_zero(pickup_bin_count_df: DataFrame, n_clusters):
+    now = datetime.now()
+    print("fill_missing_tbins_with_zero() - starting..")
+    ss = SparkSession.getActiveSession()
+    print("fill_missing_tbins_with_zero() - caching data...")
+    pickup_bin_count_df_pd: pd.DataFrame = pickup_bin_count_df.toPandas()
+    print("fill_missing_tbins_with_zero() - caching finished")
+    for cluster_id in range(0, n_clusters):
+        now_for_cluster = datetime.now()
+
+        current_cluster_df = pickup_bin_count_df_pd.loc[pickup_bin_count_df_pd.pickup_cluster == cluster_id]
+        time_bins = current_cluster_df["time_bin"].unique()
+        for time_bin in range(4464):  # todo добавить динамическое вычилсление количества бинов по месяцу
+            # todo проверить совместимость типов str
+            if time_bin not in time_bins:
+                pickup_bin_count_df_pd = pickup_bin_count_df_pd.append({
+                    "pickup_cluster": cluster_id,
+                    "time_bin": time_bin,
+                    "count": 0
+                }, ignore_index=True)
+        print("fill_missing_tbins_with_zero() - cluster {0} processing finished. time taken {1}".format(cluster_id,
+                                                                                                        datetime.now() - now_for_cluster))
+    pickup_bin_count_df_pd = pickup_bin_count_df_pd.loc[pickup_bin_count_df_pd.time_bin >= 0]
+    print("fill_missing_tbins_with_zero() - time taken {}".format(datetime.now() - now))
+    assert len(pickup_bin_count_df_pd.index) == 4464 * 30
+    return ss.createDataFrame(pickup_bin_count_df_pd)
 
 
-def smoothing(numberOfPickups, correspondingTimeBin,n_clusters):
+def fill_missing_tbins_with_zero_withoud_collecting(pickup_bin_count_df: DataFrame, n_clusters):
+    now = datetime.now()
+    print("fill_missing_tbins_with_zero() - starting..")
+    ss = SparkSession.getActiveSession()
+    print("fill_missing_tbins_with_zero() - caching data...")
+    pickup_bin_count_df = pickup_bin_count_df.cache()
+    print("fill_missing_tbins_with_zero() - caching finished")
+    for cluster_id in range(0, n_clusters):
+        print("fill_missing_tbins_with_zero() - processing cluster {0}. {1} - left".format(cluster_id,
+                                                                                           n_clusters - cluster_id))
+        for time_bin in range(4464):  # todo добавить динамическое вычилсление количества бинов по месяцу
+            row = ss.createDataFrame([(cluster_id, time_bin, 0)], "pickup_cluster int, time_bin int, count int")
+            pickup_bin_count_df = pickup_bin_count_df.union(row)
+
+    from pyspark.sql.window import Window
+    import pyspark.sql.functions as F
+    from pyspark.sql.functions import col
+
+    pickup_bin_count_df = pickup_bin_count_df.select("pickup_cluster", "time_bin", "count", F.row_number().over(
+        Window.partitionBy("count").orderBy(pickup_bin_count_df['count'])).alias("row_num")).sort(col("count"))
+    pickup_bin_count_df = pickup_bin_count_df.filter(pickup_bin_count_df.row_num == 1).show()
+
+    print("fill_missing_tbins_with_zero() - time taken {}".format(datetime.now() - now))
+    return pickup_bin_count_df
+
+
+def smoothing(numberOfPickups, correspondingTimeBin, n_clusters):
     ind = 0
     repeat = 0
     smoothed_region = []
@@ -564,19 +652,19 @@ def exponential_weighted_moving_average_predictions(ratios, n_clusters):
     return ratios, mean_absolute_percentage_error, mean_sq_error
 
 
-def preprocess(data):
+def preprocess(data: DataFrame) -> DataFrame:
     print("preprocess() - Starting baseline preprocessing")
     print("preprocess() - Calculating trip times")
-    df = df_with_trip_times(data)
+    df = update_columns(data)
     print("preprocess() - Cleaning records with incorrect driver speed ")
     df = clean_points_by_incorrect_speed(df)
     print("preprocess() - Cleaning records out of area")
-    df = clean_points_out_of_area(df)
+    df: DataFrame = clean_points_out_of_area(df)
     print("preprocess() - Finished baseline preprocessing")
     return df
 
 
-def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE):
+def pick_clusters_count(coord, cluster_distance_min):
     print("Beginning procedure of choosing clusters count..")
     startTime = datetime.now()
     clusters_min_dist = {}
@@ -585,6 +673,6 @@ def pick_clusters_count(coord, MIN_CLUSTER_DISTANCE):
         clusters_min_dist.update(min_distance(regionCenters, totalClusters))
     print("Finished procedure of choosing clusters count. Time taken = " + str(datetime.now() - startTime))
     for k in sorted(clusters_min_dist, key=clusters_min_dist.get, reverse=True):
-        if clusters_min_dist[k] <= MIN_CLUSTER_DISTANCE:
-            print("Appropriate clusters number: ", k)
+        if clusters_min_dist[k] <= cluster_distance_min:
+            print("Picking clusters number: ", k)
             return k
